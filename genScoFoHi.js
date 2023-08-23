@@ -13,12 +13,18 @@ exec(`ffmpeg -y -i ${inputVideo} -r 30 -vcodec libx264 -acodec aac inputsf_30fps
 
     if (err) return console.error(err);
 
-    //fs.writeFileSync('vidList.txt', "file 'inputsf_30fps_with_silence.mp4'\nfile 'scorefol.io_outro_30fps_44100ar.mp4'");
-
-    console.log("Concatenating score video with outro")
+    console.log("Concatenating score video with outro");
     exec(`ffmpeg -y -f concat -safe 0 -i vidList.txt -c copy _scorefolioHighlight.mp4`, (err) => {
       if (err) return console.error(err);
       console.log('Processing complete.');
+
+      // Delete the temporary files
+      fs.unlink('inputsf_30fps.mp4', (err) => {
+        if (err) console.error(err);
+      });
+      fs.unlink('inputsf_30fps_with_silence.mp4', (err) => {
+        if (err) console.error(err);
+      });
     });
   });
 });
