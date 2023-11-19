@@ -14,7 +14,7 @@ exec(`ffmpeg -y -i ${inputVideo} -r 30 -vcodec libx264 -acodec aac inputsf_30fps
     if (err) return console.error(err);
 
     console.log("Concatenating score video with outro");
-    exec(`ffmpeg -y -f concat -safe 0 -i vidListFms.txt -c copy _scorefolioHighlight.mp4`, (err) => {
+    exec(`ffmpeg -y -f concat -safe 0 -i vidListFms.txt -c copy _fms.mp4`, (err) => {
       if (err) return console.error(err);
       console.log('Processing complete.');
 
