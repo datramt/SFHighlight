@@ -1,2 +1,0 @@
-file 'inputsf_30fps_with_silence.mp4'
-file 'outros/fms_outro_30fps_44100ar_4k.mp4'
