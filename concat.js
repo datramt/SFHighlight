@@ -1,86 +1,140 @@
 const { exec } = require("child_process");
 const fs = require("fs");
+const util = require("util");
 
+// Promisify exec and fs functions
+const execPromise = util.promisify(exec);
+const writeFile = util.promisify(fs.writeFile);
+const unlink = util.promisify(fs.unlink);
+
+// Constants for file paths
+const OUTPUT_4K_FMS = "outros/fms_outro_30fps_44100ar_4k.mp4";
+const OUTPUT_1080P_FMS = "outros/fms_outro_30fps_44100ar.mp4";
+const OUTPUT_4K_SCORE = "outros/scorefol.io_outro_30fps_44100ar_4k.mp4";
+const OUTPUT_1080P_SCORE = "outros/scorefol.io_outro_30fps_44100ar.mp4";
+const TEMP_VIDEO = "inputsf_30fps.mp4";
+const TEMP_VIDEO_WITH_SILENCE = "inputsf_30fps_with_silence.mp4";
+const VID_LIST_FILE = "vidList.txt";
+
+// Input arguments
 const inputVideo = process.argv[2];
 const videoType = process.argv[3]; // 'F' for FMS, 'H' for Highlight
-let resWidth;
-let vidList;
-let outroFile;
 
-// Get width of video and log it
-exec(
-  `ffprobe -v error -select_streams v:0 -show_entries stream=width -of csv=s=x:p=0 ${inputVideo}`,
-  (err, stdout) => {
-    if (err) return console.error(err);
+// Validate input arguments
+if (!inputVideo || !videoType || !["F", "H"].includes(videoType)) {
+  console.error("Usage: node script.js <inputVideo> <videoType ('F' or 'H')>");
+  process.exit(1);
+}
 
-    if (videoType === "F") {
-      console.log("Processing FMS video...");
-    } else {
-      console.log("Processing Highlight video...");
-    }
+// Helper function for logging with timestamps
+function logWithTimestamp(message) {
+  const timestamp = new Date().toISOString();
+  console.log(`[${timestamp}] ${message}`);
+}
 
-    resWidth = stdout.trim();
-    console.log(`Width Resolution: ${resWidth}`);
-
-    // Determine which outro sequence to use based on resolution and video type
-    if (resWidth === "3840") {
-      vidList = videoType === "F" ? "vidListFms4k.txt" : "vidListSh4k.txt";
-      outroFile =
-        videoType === "F"
-          ? "outros/fms_outro_30fps_44100ar_4k.mp4"
-          : "outros/scorefol.io_outro_30fps_44100ar_4k.mp4";
-      console.log("Using 4k ending sequence...");
-    } else {
-      vidList = videoType === "F" ? "vidListFms.txt" : "vidListSh.txt";
-      outroFile =
-        videoType === "F"
-          ? "outros/fms_outro_30fps_44100ar.mp4"
-          : "outros/scorefol.io_outro_30fps_44100ar.mp4";
-      console.log("Using 1080p ending sequence...");
-    }
-
-    console.log("Increasing score video framerate to 30 fps...");
-    exec(
-      `ffmpeg -y -i ${inputVideo} -r 30 -vcodec libx264 -acodec aac inputsf_30fps.mp4`,
-      (err) => {
-        if (err) return console.error(err);
-
-        console.log("Probing duration of video stream & audio stream to determine how many seconds the ending sequence is");
-        console.log("Adding silence to end of audio stream so that both streams match in duration");
-        exec(
-          `VIDEO_DURATION=$(ffprobe -v error -show_entries stream=duration -of default=noprint_wrappers=1:nokey=1 -select_streams v:0 inputsf_30fps.mp4) && AUDIO_DURATION=$(ffprobe -v error -show_entries stream=duration -of default=noprint_wrappers=1:nokey=1 -select_streams a:0 inputsf_30fps.mp4) && DIFFERENCE=$(echo "$VIDEO_DURATION - $AUDIO_DURATION" | bc) && ffmpeg -y -i inputsf_30fps.mp4 -filter_complex "[0:a]apad=whole_len=$(echo "($VIDEO_DURATION*44100)/1" | bc)[aout]" -map 0:v -map "[aout]" -vcodec copy -acodec aac inputsf_30fps_with_silence.mp4`,
-          (err) => {
-            if (err) return console.error(err);
-
-            console.log("Generating vidList.txt dynamically...");
-            const vidListContent = `file 'inputsf_30fps_with_silence.mp4'\nfile '${outroFile}'`;
-
-            fs.writeFileSync("vidList.txt", vidListContent);
-
-            console.log("Concatenating score video with outro...");
-            exec(
-              `ffmpeg -y -f concat -safe 0 -i vidList.txt -c copy ${
-                videoType === "F" ? "_fms.mp4" : "_scorefolioHighlight.mp4"
-              }`,
-              (err) => {
-                if (err) return console.error(err);
-                console.log("Processing complete.");
-
-                // Delete the temporary files
-                fs.unlink("inputsf_30fps.mp4", (err) => {
-                  if (err) console.error(err);
-                });
-                fs.unlink("inputsf_30fps_with_silence.mp4", (err) => {
-                  if (err) console.error(err);
-                });
-                fs.unlink("vidList.txt", (err) => {
-                  if (err) console.error(err);
-                });
-              }
-            );
-          }
-        );
-      }
-    );
+// Helper function for executing FFmpeg commands
+async function safeExec(command, stepDescription) {
+  try {
+    logWithTimestamp(`Starting: ${stepDescription}`);
+    await execPromise(command);
+    logWithTimestamp(`Completed: ${stepDescription}`);
+  } catch (error) {
+    console.error(`Failed during: ${stepDescription}\nCommand: ${command}\nError: ${error.message}`);
+    process.exit(1);
   }
-);
+}
+
+// Function to get video width
+async function getVideoWidth(video) {
+  const { stdout } = await execPromise(
+    `ffprobe -v error -select_streams v:0 -show_entries stream=width -of csv=s=x:p=0 ${video}`
+  );
+  return stdout.trim();
+}
+
+// Function to get the correct outro file based on resolution and video type
+function getOutroFile(resWidth, videoType) {
+  const is4k = resWidth === "3840";
+  const files = {
+    F: is4k ? OUTPUT_4K_FMS : OUTPUT_1080P_FMS,
+    H: is4k ? OUTPUT_4K_SCORE : OUTPUT_1080P_SCORE,
+  };
+  return files[videoType] || OUTPUT_1080P_SCORE;
+}
+
+// Function to increase framerate to 30 fps
+async function increaseFramerate(input) {
+  await safeExec(
+    `ffmpeg -y -i ${input} -r 30 -vcodec libx264 -acodec aac ${TEMP_VIDEO}`,
+    "Increasing video framerate to 30 fps"
+  );
+}
+
+// Function to add silence to match video duration
+async function addSilenceToMatchDuration() {
+  const cmd = `
+    VIDEO_DURATION=$(ffprobe -v error -show_entries stream=duration -of default=noprint_wrappers=1:nokey=1 -select_streams v:0 ${TEMP_VIDEO}) &&
+    AUDIO_DURATION=$(ffprobe -v error -show_entries stream=duration -of default=noprint_wrappers=1:nokey=1 -select_streams a:0 ${TEMP_VIDEO}) &&
+    DIFFERENCE=$(echo "$VIDEO_DURATION - $AUDIO_DURATION" | bc) &&
+    ffmpeg -y -i ${TEMP_VIDEO} -filter_complex "[0:a]apad=whole_len=$(echo "($VIDEO_DURATION*44100)/1" | bc)[aout]" -map 0:v -map "[aout]" -vcodec copy -acodec aac ${TEMP_VIDEO_WITH_SILENCE}
+  `;
+  await safeExec(cmd, "Adding silence to match video duration");
+}
+
+// Function to generate vidList.txt dynamically
+async function generateVidList(outroFile) {
+  const vidListContent = `file '${TEMP_VIDEO_WITH_SILENCE}'\nfile '${outroFile}'`;
+  logWithTimestamp("Generating vidList.txt dynamically...");
+  logWithTimestamp(`vidList.txt content:\n${vidListContent}`);
+  await writeFile(VID_LIST_FILE, vidListContent);
+}
+
+// Function to concatenate the video with outro
+async function concatenateVideo(videoType) {
+  const outputFileName = videoType === "F" ? "_fms.mp4" : "_scorefolioHighlight.mp4";
+  await safeExec(
+    `ffmpeg -y -f concat -safe 0 -i ${VID_LIST_FILE} -c copy ${outputFileName}`,
+    "Concatenating video with outro"
+  );
+}
+
+// Function to clean up temporary files
+async function cleanup(files) {
+  for (const file of files) {
+    try {
+      await unlink(file);
+      logWithTimestamp(`Deleted temporary file: ${file}`);
+    } catch (error) {
+      console.error(`Error deleting file: ${file}`, error);
+    }
+  }
+}
+
+// Main processing function
+async function processVideo() {
+  try {
+    const resWidth = await getVideoWidth(inputVideo);
+    logWithTimestamp(`Width Resolution: ${resWidth}`);
+
+    const outroFile = getOutroFile(resWidth, videoType);
+
+    if (resWidth === "3840") {
+      logWithTimestamp("Using 4k ending sequence...");
+    } else {
+      logWithTimestamp("Using 1080p ending sequence...");
+    }
+
+    await increaseFramerate(inputVideo);
+    await addSilenceToMatchDuration();
+    await generateVidList(outroFile);
+    await concatenateVideo(videoType);
+    await cleanup([TEMP_VIDEO, TEMP_VIDEO_WITH_SILENCE, VID_LIST_FILE]);
+
+    logWithTimestamp("Processing complete.");
+  } catch (error) {
+    console.error("Error during processing:", error);
+  }
+}
+
+// Run the main function
+processVideo();
