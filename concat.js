@@ -12,17 +12,19 @@ const OUTPUT_4K_FMS = "outros/fms_outro_30fps_44100ar_4k.mp4";
 const OUTPUT_1080P_FMS = "outros/fms_outro_30fps_44100ar.mp4";
 const OUTPUT_4K_SCORE = "outros/scorefol.io_outro_30fps_44100ar_4k.mp4";
 const OUTPUT_1080P_SCORE = "outros/scorefol.io_outro_30fps_44100ar.mp4";
+const OUTPUT_4K_SITES = "outros/sites_outro_30fps_44100ar_4k.mp4";
+const OUTPUT_1080P_SITES = "outros/sites_outro_30fps_44100ar.mp4";
 const TEMP_VIDEO = "inputsf_30fps.mp4";
 const TEMP_VIDEO_WITH_SILENCE = "inputsf_30fps_with_silence.mp4";
 const VID_LIST_FILE = "vidList.txt";
 
 // Input arguments
 const inputVideo = process.argv[2];
-const videoType = process.argv[3]; // 'F' for FMS, 'H' for Highlight
+const videoType = process.argv[3]; // 'F' for FMS, 'H' for Highlight, 'S' for Sites
 
 // Validate input arguments
-if (!inputVideo || !videoType || !["F", "H"].includes(videoType)) {
-  console.error("Usage: node script.js <inputVideo> <videoType ('F' or 'H')>");
+if (!inputVideo || !videoType || !["F", "H", "S"].includes(videoType)) {
+  console.error("Usage: node script.js <inputVideo> <videoType ('F', 'H', or 'S')>");
   process.exit(1);
 }
 
@@ -58,8 +60,19 @@ function getOutroFile(resWidth, videoType) {
   const files = {
     F: is4k ? OUTPUT_4K_FMS : OUTPUT_1080P_FMS,
     H: is4k ? OUTPUT_4K_SCORE : OUTPUT_1080P_SCORE,
+    S: is4k ? OUTPUT_4K_SITES : OUTPUT_1080P_SITES
   };
-  return files[videoType] || OUTPUT_1080P_SCORE;
+  
+  const selectedFile = files[videoType];
+  
+  // Check if outro file exists
+  if (videoType === 'S' && !fs.existsSync(selectedFile)) {
+    console.error(`\nError: Sites outro file not found: ${selectedFile}`);
+    console.error("Please run makeOutros.js first to generate the outro files.\n");
+    process.exit(1);
+  }
+  
+  return selectedFile;
 }
 
 // Function to increase framerate to 30 fps
@@ -91,7 +104,12 @@ async function generateVidList(outroFile) {
 
 // Function to concatenate the video with outro
 async function concatenateVideo(videoType) {
-  const outputFileName = videoType === "F" ? "_fms.mp4" : "_scorefolioHighlight.mp4";
+  const outputFileNames = {
+    F: "_fms.mp4",
+    H: "_scorefolioHighlight.mp4",
+    S: "_sites.mp4"
+  };
+  const outputFileName = outputFileNames[videoType];
   await safeExec(
     `ffmpeg -y -f concat -safe 0 -i ${VID_LIST_FILE} -c copy ${outputFileName}`,
     "Concatenating video with outro"
