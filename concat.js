@@ -1,4 +1,4 @@
-const { exec } = require("child_process");
+const { exec, spawn } = require("child_process");
 const fs = require("fs");
 const util = require("util");
 
@@ -77,10 +77,54 @@ function getOutroFile(resWidth, videoType) {
 
 // Function to increase framerate to 30 fps
 async function increaseFramerate(input) {
-  await safeExec(
-    `ffmpeg -y -i ${input} -r 30 -vcodec libx264 -acodec aac ${TEMP_VIDEO}`,
-    "Increasing video framerate to 30 fps"
-  );
+  const cmdArgs = ['-y', '-i', input, '-r', '30', '-vcodec', 'libx264', '-acodec', 'aac', TEMP_VIDEO, '-progress', 'pipe:1', '-nostats'];
+
+  logWithTimestamp("Starting framerate conversion to 30 fps...");
+
+  // Get video duration first
+  let duration = 0;
+  try {
+    const { stdout } = await execPromise(`ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 ${input}`);
+    duration = parseFloat(stdout.trim());
+  } catch (e) {
+    logWithTimestamp("Could not determine video duration for progress bar.");
+  }
+
+  return new Promise((resolve, reject) => {
+    const ffmpeg = spawn('ffmpeg', cmdArgs);
+    let time = 0;
+
+    ffmpeg.stdout.on('data', (data) => {
+      handleProgressData(data);
+    });
+    ffmpeg.stderr.on('data', (data) => {
+      // FFmpeg may output progress to stdout only, but just in case
+      handleProgressData(data);
+    });
+
+    function handleProgressData(data) {
+      const lines = data.toString().split('\n');
+      for (const line of lines) {
+        if (line.startsWith('out_time_ms=')) {
+          time = parseFloat(line.split('=')[1]) / 1000000;
+        }
+      }
+      if (duration > 0 && time > 0) {
+        const progress = Math.min(100, Math.round((time / duration) * 100));
+        process.stdout.write(`\rProgress: [${'='.repeat(Math.floor(progress/2))}${' '.repeat(50-Math.floor(progress/2))}] ${progress}%`);
+      }
+    }
+
+    ffmpeg.on('close', (code) => {
+      process.stdout.write('\n');
+      if (code === 0) {
+        logWithTimestamp("Framerate conversion completed");
+        resolve();
+      } else {
+        reject(new Error(`FFmpeg process exited with code ${code}`));
+      }
+    });
+  });
 }
 
 // Function to add silence to match video duration
