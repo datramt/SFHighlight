@@ -98,7 +98,7 @@ async function increaseFramerate(input) {
       handleProgressData(data);
     });
     ffmpeg.stderr.on('data', (data) => {
-      // FFmpeg may output progress to stdout only, but just in case
+      // FFmpeg may output progress to stdout only, but just in case 
       handleProgressData(data);
     });
 
