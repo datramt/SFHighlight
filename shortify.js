@@ -260,8 +260,8 @@ async function createPanningVideo(stillsDir, frameFiles, timestamps, videoInfo) 
     
     inputs += `-loop 1 -t ${duration} -i "${frameFile}" `;
     
-    // Create panning filter for this frame; ensure per-segment time starts at 0
-    filterComplex += `[${i}:v]scale=${scaledWidth}:${portraitHeight},crop=${portraitWidth}:${portraitHeight}:'min(max(0,${panDistance}*(t/${duration})),${panDistance})':0,setpts=PTS-STARTPTS[v${i}];`;
+    // Create panning filter for this frame; force 60fps BEFORE crop so pan updates 60x/sec
+    filterComplex += `[${i}:v]fps=${FRAME_RATE},scale=${scaledWidth}:${portraitHeight},crop=${portraitWidth}:${portraitHeight}:'${panDistance}*t/${duration}':0,setpts=PTS-STARTPTS[v${i}];`;
   }
   
   // Concatenate all panned frames
