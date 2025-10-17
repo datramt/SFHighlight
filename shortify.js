@@ -19,13 +19,29 @@ if (!inputVideo) {
 
 // Constants
 const TEMP_DIR = `temp_shortify_${Date.now()}`;
-const OUTPUT_FILE = "shorted.mp4";
+const OUTPUT_FILE = "_shorted.mp4";
 const FRAME_RATE = 30;
 
 // Helper function for logging with timestamps
 function logWithTimestamp(message) {
   const timestamp = new Date().toISOString();
   console.log(`[${timestamp}] ${message}`);
+}
+
+// Helper to extract scene-change timestamps via showinfo (reads stderr, no shell redirection)
+async function extractSceneTimestampsFromShowinfo(video, threshold) {
+  const cmd = `ffmpeg -hide_banner -loglevel info -nostats -i "${video}" -vf "select='if(eq(n,0),1,gt(scene,${threshold}))',showinfo" -f null -`;
+  const { stderr } = await execPromise(cmd);
+  const timestamps = [];
+  const lines = stderr.split('\n');
+  for (const line of lines) {
+    const m = line.match(/pts_time:([\d\.]+)/);
+    if (m) {
+      const t = parseFloat(m[1]);
+      if (!isNaN(t)) timestamps.push(t);
+    }
+  }
+  return timestamps;
 }
 
 // Helper function for executing FFmpeg commands
@@ -64,18 +80,48 @@ async function getVideoInfo(video) {
   };
 }
 
-// Function to extract still frames using scene detection
+// Function to get video time base (num/den)
+async function getVideoTimeBase(video) {
+  const { stdout: timeBase } = await execPromise(
+    `ffprobe -v error -select_streams v:0 -show_entries stream=time_base -of default=noprint_wrappers=1:nokey=1 "${video}"`
+  );
+  const tb = timeBase.trim();
+  const [numStr, denStr] = tb.split("/");
+  const num = parseInt(numStr, 10);
+  const den = parseInt(denStr, 10);
+  return { num, den };
+}
+
+// Function to extract still frames using scene detection and capture timestamps
 async function extractStills(inputVideo) {
   const stillsDir = path.join(TEMP_DIR, 'stills');
   
   // Create temporary directory
   await fs.promises.mkdir(stillsDir, { recursive: true });
   
-  // Extract unique frames using scene detection (more sensitive for score videos)
-  await safeExec(
-    `ffmpeg -i "${inputVideo}" -vf "select='if(eq(n,0),1,gt(scene,0.05))'" -vsync vfr "${stillsDir}/frame_%d.png"`,
-    "Extracting still frames from video"
-  );
+  let timestamps = [];
+  let usedRegularIntervals = false;
+  
+  try {
+    // Extract frames with scene detection and write filenames with sequential index
+    logWithTimestamp("Extracting frames with scene detection...");
+    await safeExec(
+      `ffmpeg -hide_banner -loglevel error -i "${inputVideo}" -vf "select='if(eq(n,0),1,gt(scene,0.01))'" -vsync vfr "${stillsDir}/frame_%d.png"`,
+      "Extracting frames with scene detection"
+    );
+
+    // Independently extract timestamps via showinfo (stderr parsed directly)
+    const sceneTimestamps = await extractSceneTimestampsFromShowinfo(inputVideo, 0.01);
+    if (sceneTimestamps.length > 0) {
+      timestamps = sceneTimestamps;
+      logWithTimestamp(`Captured ${timestamps.length} timestamps via showinfo.`);
+    } else {
+      logWithTimestamp("No timestamps from showinfo; will fallback later if needed.");
+    }
+  } catch (error) {
+    logWithTimestamp("Scene detection failed, trying regular intervals");
+    usedRegularIntervals = true;
+  }
   
   // Get list of extracted frames
   let files = await fs.promises.readdir(stillsDir);
@@ -90,6 +136,7 @@ async function extractStills(inputVideo) {
   // If scene detection didn't find enough frames, extract frames at regular intervals
   if (frameFiles.length < 2) {
     logWithTimestamp("Scene detection found too few frames, extracting at regular intervals instead");
+    usedRegularIntervals = true;
     
     // Clear existing frames
     for (const file of frameFiles) {
@@ -98,7 +145,7 @@ async function extractStills(inputVideo) {
     
     // Extract frames every 2 seconds
     await safeExec(
-      `ffmpeg -i "${inputVideo}" -vf "fps=0.5" "${stillsDir}/frame_%d.png"`,
+      `ffmpeg -hide_banner -loglevel error -i "${inputVideo}" -vf "fps=0.5" -frame_pts 1 "${stillsDir}/frame_%d.png"`,
       "Extracting frames at regular intervals"
     );
     
@@ -113,22 +160,67 @@ async function extractStills(inputVideo) {
       });
   }
   
+  // If showinfo didn't yield timestamps, fallback to evenly distributing across duration
+  if (timestamps.length === 0 && frameFiles.length > 0) {
+    const videoInfo = await getVideoInfo(inputVideo);
+    const interval = videoInfo.duration / frameFiles.length;
+    timestamps = Array.from({ length: frameFiles.length }, (_, i) => i * interval);
+    logWithTimestamp(`Fallback timestamps (even distribution): ${timestamps.map(t=>t.toFixed(2)).join(', ')}`);
+  }
+
   logWithTimestamp(`Extracted ${frameFiles.length} still frames`);
-  return { stillsDir, frameFiles };
+  return { stillsDir, frameFiles, usedRegularIntervals, timestamps };
 }
 
-// Function to get frame timestamps from original video
-async function getFrameTimestamps(inputVideo, frameCount) {
-  // Use a simpler approach - just estimate timestamps based on frame count and duration
+// Function to get frame timestamps that match exactly how we extracted the frames
+async function getFrameTimestamps(inputVideo, frameCount, usedRegularIntervals) {
   const videoInfo = await getVideoInfo(inputVideo);
   const timestamps = [];
   
-  // For now, just create evenly spaced timestamps
-  // In a real implementation, you'd want to use the actual scene detection timestamps
-  for (let i = 0; i < frameCount; i++) {
-    timestamps.push((videoInfo.duration / frameCount) * i);
+  if (usedRegularIntervals) {
+    // If we used regular intervals for frame extraction, use the same for timestamps
+    logWithTimestamp("Using regular intervals for timestamps to match frame extraction");
+    const interval = videoInfo.duration / frameCount;
+    for (let i = 0; i < frameCount; i++) {
+      timestamps.push(interval * i);
+    }
+  } else {
+    // If we used scene detection for frames, try to get the actual timestamps
+    try {
+      logWithTimestamp("Attempting to extract scene detection timestamps...");
+      const { stderr } = await execPromise(
+        `ffmpeg -i "${inputVideo}" -vf "select='if(eq(n,0),1,gt(scene,0.01))',showinfo" -f null - 2>&1`
+      );
+      
+      // Parse the stderr output to extract timestamps
+      const lines = stderr.split('\n');
+      for (const line of lines) {
+        const match = line.match(/n:\s*(\d+).*pts_time:([\d.]+)/);
+        if (match) {
+          timestamps.push(parseFloat(match[2]));
+        }
+      }
+      
+      // If we didn't get enough timestamps, fall back to regular intervals
+      if (timestamps.length < frameCount) {
+        logWithTimestamp(`Scene detection found ${timestamps.length} timestamps, using regular intervals`);
+        timestamps.length = 0;
+        const interval = videoInfo.duration / frameCount;
+        for (let i = 0; i < frameCount; i++) {
+          timestamps.push(interval * i);
+        }
+      }
+      
+    } catch (error) {
+      logWithTimestamp("Failed to extract scene timestamps, using regular intervals");
+      const interval = videoInfo.duration / frameCount;
+      for (let i = 0; i < frameCount; i++) {
+        timestamps.push(interval * i);
+      }
+    }
   }
   
+  logWithTimestamp(`Final timestamps: ${timestamps.map(t => t.toFixed(2)).join(', ')}`);
   return timestamps;
 }
 
@@ -157,7 +249,14 @@ async function createPanningVideo(stillsDir, frameFiles, timestamps, videoInfo) 
   
   for (let i = 0; i < frameFiles.length; i++) {
     const frameFile = path.join(stillsDir, frameFiles[i]);
-    const duration = i < timestamps.length - 1 ? timestamps[i + 1] - timestamps[i] : 2.0; // Default 2s for last frame
+    // Calculate duration for this frame segment
+    let duration;
+    if (i < timestamps.length - 1) {
+      duration = timestamps[i + 1] - timestamps[i];
+    } else {
+      // For the last frame, use the remaining time to match total video duration
+      duration = videoInfo.duration - timestamps[i];
+    }
     
     inputs += `-loop 1 -t ${duration} -i "${frameFile}" `;
     
@@ -223,15 +322,18 @@ async function processVideo() {
     const videoInfo = await getVideoInfo(inputVideo);
     logWithTimestamp(`Video dimensions: ${videoInfo.width}x${videoInfo.height}, duration: ${videoInfo.duration}s`);
     
-    // Extract still frames
-    const { stillsDir, frameFiles } = await extractStills(inputVideo);
+    // Extract still frames and timestamps
+    const { stillsDir, frameFiles, usedRegularIntervals, timestamps } = await extractStills(inputVideo);
     
-    // Get frame timestamps
-    const timestamps = await getFrameTimestamps(inputVideo, frameFiles.length);
-    logWithTimestamp(`Frame timestamps: ${timestamps.map(t => t.toFixed(2)).join(', ')}`);
+    // If we didn't get timestamps from scene detection, get them using regular intervals
+    let finalTimestamps = timestamps;
+    if (timestamps.length === 0) {
+      finalTimestamps = await getFrameTimestamps(inputVideo, frameFiles.length, usedRegularIntervals);
+    }
+    logWithTimestamp(`Frame timestamps: ${finalTimestamps.map(t => t.toFixed(2)).join(', ')}`);
     
     // Create panning video
-    const panningVideo = await createPanningVideo(stillsDir, frameFiles, timestamps, videoInfo);
+    const panningVideo = await createPanningVideo(stillsDir, frameFiles, finalTimestamps, videoInfo);
     
     // Reattach audio
     const audioFile = await reattachAudio(inputVideo, panningVideo);
