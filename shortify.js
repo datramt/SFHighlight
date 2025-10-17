@@ -228,20 +228,32 @@ async function getFrameTimestamps(inputVideo, frameCount, usedRegularIntervals) 
 async function createPanningVideo(stillsDir, frameFiles, timestamps, videoInfo) {
   const outputVideo = path.join(TEMP_DIR, 'panning_video.mp4');
   
-  // Calculate panning parameters
+  // Calculate panning parameters based on input resolution
   const landscapeWidth = videoInfo.width;
   const landscapeHeight = videoInfo.height;
-  const portraitHeight = 1080; // Standard portrait height
-  const portraitWidth = 608;   // Standard portrait width (9:16 aspect ratio)
+  
+  // Detect if input is 4K or 1080p and set output accordingly
+  let portraitHeight, portraitWidth;
+  if (landscapeHeight >= 2160) {
+    // 4K input -> 4K portrait (2160x3840)
+    portraitHeight = 3840;
+    portraitWidth = 2160;
+    logWithTimestamp("Detected 4K input, outputting 4K portrait (2160x3840)");
+  } else {
+    // 1080p or lower -> 1080p portrait (608x1080)
+    portraitHeight = 1080;
+    portraitWidth = 608;
+    logWithTimestamp("Detected 1080p or lower input, outputting 1080p portrait (608x1080)");
+  }
   
   // Scale factor to fit landscape height to portrait height
   const scaleFactor = portraitHeight / landscapeHeight;
-  const scaledWidth = landscapeWidth * scaleFactor;
+  const scaledWidth = Math.round(landscapeWidth * scaleFactor);
   
   // Pan distance (how much we need to pan from left to right)
   const panDistance = scaledWidth - portraitWidth;
   
-  logWithTimestamp(`Panning parameters: scale=${scaleFactor.toFixed(3)}, pan distance=${panDistance.toFixed(0)}px`);
+  logWithTimestamp(`Panning parameters: input=${landscapeWidth}x${landscapeHeight}, output=${portraitWidth}x${portraitHeight}, scale=${scaleFactor.toFixed(3)}, pan distance=${panDistance.toFixed(0)}px`);
   
   // Create filter complex for each frame with panning
   let filterComplex = '';
