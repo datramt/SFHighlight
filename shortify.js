@@ -71,21 +71,47 @@ async function extractStills(inputVideo) {
   // Create temporary directory
   await fs.promises.mkdir(stillsDir, { recursive: true });
   
-  // Extract unique frames using scene detection (similar to extractStills.js)
+  // Extract unique frames using scene detection (more sensitive for score videos)
   await safeExec(
-    `ffmpeg -i "${inputVideo}" -vf "select='if(eq(n,0),1,gt(scene,0.15))'" -vsync vfr "${stillsDir}/frame_%d.png"`,
+    `ffmpeg -i "${inputVideo}" -vf "select='if(eq(n,0),1,gt(scene,0.05))'" -vsync vfr "${stillsDir}/frame_%d.png"`,
     "Extracting still frames from video"
   );
   
   // Get list of extracted frames
-  const files = await fs.promises.readdir(stillsDir);
-  const frameFiles = files
+  let files = await fs.promises.readdir(stillsDir);
+  let frameFiles = files
     .filter(file => file.startsWith('frame_') && file.endsWith('.png'))
     .sort((a, b) => {
       const numA = parseInt(a.match(/frame_(\d+)\.png/)[1]);
       const numB = parseInt(b.match(/frame_(\d+)\.png/)[1]);
       return numA - numB;
     });
+  
+  // If scene detection didn't find enough frames, extract frames at regular intervals
+  if (frameFiles.length < 2) {
+    logWithTimestamp("Scene detection found too few frames, extracting at regular intervals instead");
+    
+    // Clear existing frames
+    for (const file of frameFiles) {
+      await fs.promises.unlink(path.join(stillsDir, file));
+    }
+    
+    // Extract frames every 2 seconds
+    await safeExec(
+      `ffmpeg -i "${inputVideo}" -vf "fps=0.5" "${stillsDir}/frame_%d.png"`,
+      "Extracting frames at regular intervals"
+    );
+    
+    // Get the new frame list
+    files = await fs.promises.readdir(stillsDir);
+    frameFiles = files
+      .filter(file => file.startsWith('frame_') && file.endsWith('.png'))
+      .sort((a, b) => {
+        const numA = parseInt(a.match(/frame_(\d+)\.png/)[1]);
+        const numB = parseInt(b.match(/frame_(\d+)\.png/)[1]);
+        return numA - numB;
+      });
+  }
   
   logWithTimestamp(`Extracted ${frameFiles.length} still frames`);
   return { stillsDir, frameFiles };
