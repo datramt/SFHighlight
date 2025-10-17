@@ -20,7 +20,7 @@ if (!inputVideo) {
 // Constants
 const TEMP_DIR = `temp_shortify_${Date.now()}`;
 const OUTPUT_FILE = "_shorted.mp4";
-const FRAME_RATE = 30;
+const FRAME_RATE = 60;
 
 // Helper function for logging with timestamps
 function logWithTimestamp(message) {
@@ -260,17 +260,17 @@ async function createPanningVideo(stillsDir, frameFiles, timestamps, videoInfo) 
     
     inputs += `-loop 1 -t ${duration} -i "${frameFile}" `;
     
-    // Create panning filter for this frame
-    filterComplex += `[${i}:v]scale=${scaledWidth}:${portraitHeight},crop=${portraitWidth}:${portraitHeight}:'if(gte(t,0),${panDistance}*(t/${duration}),0)':0[v${i}];`;
+    // Create panning filter for this frame; ensure per-segment time starts at 0
+    filterComplex += `[${i}:v]scale=${scaledWidth}:${portraitHeight},crop=${portraitWidth}:${portraitHeight}:'min(max(0,${panDistance}*(t/${duration})),${panDistance})':0,setpts=PTS-STARTPTS[v${i}];`;
   }
   
   // Concatenate all panned frames
   for (let i = 0; i < frameFiles.length; i++) {
     filterComplex += `[v${i}]`;
   }
-  filterComplex += `concat=n=${frameFiles.length}:v=1:a=0[outv]`;
+  filterComplex += `concat=n=${frameFiles.length}:v=1:a=0[outv];[outv]fps=${FRAME_RATE},format=yuv420p[outv2]`;
   
-  const cmd = `ffmpeg -y ${inputs}-filter_complex "${filterComplex}" -map "[outv]" -c:v libx264 -r ${FRAME_RATE} -pix_fmt yuv420p "${outputVideo}"`;
+  const cmd = `ffmpeg -y ${inputs}-filter_complex "${filterComplex}" -map "[outv2]" -c:v libx264 -pix_fmt yuv420p "${outputVideo}"`;
   
   await safeExec(cmd, "Creating panning video from still frames");
   
