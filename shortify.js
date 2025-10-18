@@ -8,29 +8,113 @@ const execPromise = util.promisify(exec);
 const writeFile = util.promisify(fs.writeFile);
 const unlink = util.promisify(fs.unlink);
 
-// Input arguments
-const inputVideo = process.argv[2];
-const holdDuration = parseFloat(process.argv[3]) || 0; // Optional: seconds to hold last frame at final position
-const zoomLevel = parseFloat(process.argv[4]) || 100; // Optional: zoom level as percentage (100 = 100% match, 50 = 50% zoom out)
+// Parse command line arguments
+function parseArguments() {
+  const args = process.argv.slice(2);
+  const config = {
+    inputVideo: null,
+    zoomLevel: 100,
+    endHold: 0,
+    startHold: 0,
+    background: 'B' // Default to black background
+  };
 
-// Validate input arguments
-if (!inputVideo) {
-  console.error("Usage: node shortify.js <inputVideo> [holdDuration] [zoomLevel]");
-  console.error("  inputVideo: Path to the video file");
-  console.error("  holdDuration: (Optional) Seconds to hold the last frame still at final pan position (default: 0)");
-  console.error("  zoomLevel: (Optional) Zoom level as percentage - 100=100% match, 50=50% zoom out (default: 100)");
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i];
+    
+    switch (arg) {
+      case '-i':
+      case '--input':
+        config.inputVideo = args[++i];
+        break;
+      case '-z':
+      case '--zoom':
+        config.zoomLevel = parseFloat(args[++i]);
+        break;
+      case '-eh':
+      case '--end-hold':
+        config.endHold = parseFloat(args[++i]);
+        break;
+      case '-sh':
+      case '--start-hold':
+        config.startHold = parseFloat(args[++i]);
+        break;
+      case '-bg':
+      case '--background':
+        config.background = args[++i].toUpperCase();
+        break;
+      case '-h':
+      case '--help':
+        showHelp();
+        process.exit(0);
+        break;
+      default:
+        if (arg.startsWith('-')) {
+          console.error(`Unknown flag: ${arg}`);
+          showHelp();
+          process.exit(1);
+        }
+        break;
+    }
+  }
+
+  return config;
+}
+
+function showHelp() {
+  console.log("Usage: node shortify.js [options]");
+  console.log("");
+  console.log("Options:");
+  console.log("  -i, --input <file>     Input video file (required)");
+  console.log("  -z, --zoom <level>     Zoom level as percentage (default: 100)");
+  console.log("                        100 = 100% match, 50 = 50% zoom out, 150 = 150% zoom in");
+  console.log("  -eh, --end-hold <sec>  Seconds to hold last frame at final position (default: 0)");
+  console.log("  -sh, --start-hold <sec> Seconds to hold first frame at start position (default: 0)");
+  console.log("  -bg, --background <W|B> Background color: W=white, B=black (default: B)");
+  console.log("  -h, --help            Show this help message");
+  console.log("");
+  console.log("Examples:");
+  console.log("  node shortify.js -i video.mp4");
+  console.log("  node shortify.js -i video.mp4 -z 75 -eh 3");
+  console.log("  node shortify.js -i video.mp4 -z 50 -bg W");
+  console.log("  node shortify.js -i video.mp4 -sh 2 -eh 3");
+}
+
+// Parse and validate arguments
+const config = parseArguments();
+
+if (!config.inputVideo) {
+  console.error("Error: Input video file is required");
+  showHelp();
   process.exit(1);
 }
 
-if (holdDuration < 0) {
-  console.error("Error: holdDuration must be a positive number or zero");
-  process.exit(1);
-}
-
-if (zoomLevel <= 0 || zoomLevel > 200) {
+if (config.zoomLevel <= 0 || config.zoomLevel > 200) {
   console.error("Error: zoomLevel must be between 1 and 200 (percentage)");
   process.exit(1);
 }
+
+if (config.endHold < 0) {
+  console.error("Error: endHold must be a positive number or zero");
+  process.exit(1);
+}
+
+if (config.startHold < 0) {
+  console.error("Error: startHold must be a positive number or zero");
+  process.exit(1);
+}
+
+if (!['W', 'B'].includes(config.background)) {
+  console.error("Error: background must be 'W' (white) or 'B' (black)");
+  process.exit(1);
+}
+
+// Set variables for backward compatibility
+const inputVideo = config.inputVideo;
+const holdDuration = config.endHold;
+const startHold = config.startHold;
+const zoomLevel = config.zoomLevel;
+const backgroundColor = config.background;
 
 // Constants
 const TEMP_DIR = `temp_shortify_${Date.now()}`;
@@ -284,6 +368,9 @@ async function createPanningVideo(stillsDir, frameFiles, timestamps, videoInfo) 
   logWithTimestamp(`Panning parameters: input=${landscapeWidth}x${landscapeHeight}, output=${portraitWidth}x${portraitHeight}`);
   logWithTimestamp(`Zoom: ${zoomLevel}% (scale=${scaleFactor.toFixed(3)}), scaled=${finalScaleWidth}x${finalScaleHeight}, canvas=${canvasWidth}x${canvasHeight}`);
   logWithTimestamp(`Pan distance: ${panDistance.toFixed(0)}px`);
+  if (startHold > 0) {
+    logWithTimestamp(`First frame hold: will hold at start position for ${startHold}s before panning`);
+  }
   if (holdDuration > 0) {
     logWithTimestamp(`Last frame hold: will complete pan ${holdDuration}s early and hold at final position`);
   }
@@ -301,10 +388,31 @@ async function createPanningVideo(stillsDir, frameFiles, timestamps, videoInfo) 
     if (i < timestamps.length - 1) {
       // Not the last frame - normal panning
       duration = timestamps[i + 1] - timestamps[i];
-      panExpression = `${panDistance}*t/${duration}`;
+      
+      // Check if start hold exceeds duration (only for first frame)
+      if (i === 0 && startHold > 0 && startHold >= duration) {
+        console.error(`Error: start hold duration (${startHold}s) exceeded the duration of the first slide (${duration.toFixed(1)}s)`);
+        process.exit(1);
+      }
+      
+      if (i === 0 && startHold > 0) {
+        // First frame with start hold - hold at start, then pan
+        const panTime = duration - startHold;
+        panExpression = `max(0, ${panDistance}*(t-${startHold})/${panTime})`;
+        logWithTimestamp(`First frame: holding for ${startHold.toFixed(1)}s, then panning for ${panTime.toFixed(1)}s`);
+      } else {
+        // Normal panning
+        panExpression = `${panDistance}*t/${duration}`;
+      }
     } else {
       // Last frame - handle hold duration
       duration = videoInfo.duration - timestamps[i];
+      
+      // Check if end hold exceeds duration
+      if (holdDuration > 0 && holdDuration >= duration) {
+        console.error(`Error: end hold duration (${holdDuration}s) exceeded the duration of the last slide (${duration.toFixed(1)}s)`);
+        process.exit(1);
+      }
       
       if (holdDuration > 0 && duration > holdDuration) {
         // Complete pan early, then hold at final position
@@ -330,7 +438,10 @@ async function createPanningVideo(stillsDir, frameFiles, timestamps, videoInfo) 
       verticalCropOffset = Math.round((finalScaleHeight - portraitHeight) / 2);
     }
     
-    filterComplex += `[${i}:v]fps=${FRAME_RATE},scale=${finalScaleWidth}:${finalScaleHeight},pad=${canvasWidth}:${canvasHeight}:${canvasHorizontalOffset}:${canvasVerticalOffset}:black,crop=${portraitWidth}:${portraitHeight}:'${panExpression}':${verticalCropOffset},setpts=PTS-STARTPTS[v${i}];`;
+    // Use the specified background color
+    const bgColor = backgroundColor === 'W' ? 'white' : 'black';
+    
+    filterComplex += `[${i}:v]fps=${FRAME_RATE},scale=${finalScaleWidth}:${finalScaleHeight},pad=${canvasWidth}:${canvasHeight}:${canvasHorizontalOffset}:${canvasVerticalOffset}:${bgColor},crop=${portraitWidth}:${portraitHeight}:'${panExpression}':${verticalCropOffset},setpts=PTS-STARTPTS[v${i}];`;
   }
   
   // Concatenate all panned frames
