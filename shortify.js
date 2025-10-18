@@ -10,10 +10,18 @@ const unlink = util.promisify(fs.unlink);
 
 // Input arguments
 const inputVideo = process.argv[2];
+const holdDuration = parseFloat(process.argv[3]) || 0; // Optional: seconds to hold last frame at final position
 
 // Validate input arguments
 if (!inputVideo) {
-  console.error("Usage: node shortify.js <inputVideo>");
+  console.error("Usage: node shortify.js <inputVideo> [holdDuration]");
+  console.error("  inputVideo: Path to the video file");
+  console.error("  holdDuration: (Optional) Seconds to hold the last frame still at final pan position (default: 0)");
+  process.exit(1);
+}
+
+if (holdDuration < 0) {
+  console.error("Error: holdDuration must be a positive number or zero");
   process.exit(1);
 }
 
@@ -254,6 +262,9 @@ async function createPanningVideo(stillsDir, frameFiles, timestamps, videoInfo) 
   const panDistance = scaledWidth - portraitWidth;
   
   logWithTimestamp(`Panning parameters: input=${landscapeWidth}x${landscapeHeight}, output=${portraitWidth}x${portraitHeight}, scale=${scaleFactor.toFixed(3)}, pan distance=${panDistance.toFixed(0)}px`);
+  if (holdDuration > 0) {
+    logWithTimestamp(`Last frame hold: will complete pan ${holdDuration}s early and hold at final position`);
+  }
   
   // Create filter complex for each frame with panning
   let filterComplex = '';
@@ -263,17 +274,31 @@ async function createPanningVideo(stillsDir, frameFiles, timestamps, videoInfo) 
     const frameFile = path.join(stillsDir, frameFiles[i]);
     // Calculate duration for this frame segment
     let duration;
+    let panExpression;
+    
     if (i < timestamps.length - 1) {
+      // Not the last frame - normal panning
       duration = timestamps[i + 1] - timestamps[i];
+      panExpression = `${panDistance}*t/${duration}`;
     } else {
-      // For the last frame, use the remaining time to match total video duration
+      // Last frame - handle hold duration
       duration = videoInfo.duration - timestamps[i];
+      
+      if (holdDuration > 0 && duration > holdDuration) {
+        // Complete pan early, then hold at final position
+        const panTime = duration - holdDuration;
+        panExpression = `min(${panDistance}, ${panDistance}*t/${panTime})`;
+        logWithTimestamp(`Last frame: panning for ${panTime.toFixed(1)}s, then holding for ${holdDuration.toFixed(1)}s`);
+      } else {
+        // Normal panning for last frame
+        panExpression = `${panDistance}*t/${duration}`;
+      }
     }
     
     inputs += `-loop 1 -t ${duration} -i "${frameFile}" `;
     
     // Create panning filter for this frame; force 60fps BEFORE crop so pan updates 60x/sec
-    filterComplex += `[${i}:v]fps=${FRAME_RATE},scale=${scaledWidth}:${portraitHeight},crop=${portraitWidth}:${portraitHeight}:'${panDistance}*t/${duration}':0,setpts=PTS-STARTPTS[v${i}];`;
+    filterComplex += `[${i}:v]fps=${FRAME_RATE},scale=${scaledWidth}:${portraitHeight},crop=${portraitWidth}:${portraitHeight}:'${panExpression}':0,setpts=PTS-STARTPTS[v${i}];`;
   }
   
   // Concatenate all panned frames
