@@ -278,10 +278,12 @@ async function createPanningVideo(stillsDir, frameFiles, timestamps, videoInfo) 
   const canvasHeight = Math.max(portraitHeight, finalScaleHeight + 200); // Extra 200px for panning
   
   // Pan distance (how much we need to pan from left to right)
-  const panDistance = Math.max(0, finalScaleWidth - portraitWidth);
+  // This should be the difference between the canvas width and portrait width
+  const panDistance = Math.max(0, canvasWidth - portraitWidth);
   
   logWithTimestamp(`Panning parameters: input=${landscapeWidth}x${landscapeHeight}, output=${portraitWidth}x${portraitHeight}`);
-  logWithTimestamp(`Zoom: ${zoomLevel}% (scale=${scaleFactor.toFixed(3)}), pan distance=${panDistance.toFixed(0)}px`);
+  logWithTimestamp(`Zoom: ${zoomLevel}% (scale=${scaleFactor.toFixed(3)}), scaled=${finalScaleWidth}x${finalScaleHeight}, canvas=${canvasWidth}x${canvasHeight}`);
+  logWithTimestamp(`Pan distance: ${panDistance.toFixed(0)}px`);
   if (holdDuration > 0) {
     logWithTimestamp(`Last frame hold: will complete pan ${holdDuration}s early and hold at final position`);
   }
@@ -320,7 +322,15 @@ async function createPanningVideo(stillsDir, frameFiles, timestamps, videoInfo) 
     // Scale to the zoom level, then pad to canvas size, then crop to portrait size with panning
     const canvasHorizontalOffset = Math.round((canvasWidth - finalScaleWidth) / 2);
     const canvasVerticalOffset = Math.round((canvasHeight - finalScaleHeight) / 2);
-    filterComplex += `[${i}:v]fps=${FRAME_RATE},scale=${finalScaleWidth}:${finalScaleHeight},pad=${canvasWidth}:${canvasHeight}:${canvasHorizontalOffset}:${canvasVerticalOffset}:black,crop=${portraitWidth}:${portraitHeight}:'${panExpression}':0,setpts=PTS-STARTPTS[v${i}];`;
+    
+    // For zoom levels > 100%, we need to adjust the vertical crop position to center the content
+    let verticalCropOffset = 0;
+    if (zoomLevel > 100) {
+      // When zoomed in, center the crop vertically instead of cropping from top
+      verticalCropOffset = Math.round((finalScaleHeight - portraitHeight) / 2);
+    }
+    
+    filterComplex += `[${i}:v]fps=${FRAME_RATE},scale=${finalScaleWidth}:${finalScaleHeight},pad=${canvasWidth}:${canvasHeight}:${canvasHorizontalOffset}:${canvasVerticalOffset}:black,crop=${portraitWidth}:${portraitHeight}:'${panExpression}':${verticalCropOffset},setpts=PTS-STARTPTS[v${i}];`;
   }
   
   // Concatenate all panned frames
