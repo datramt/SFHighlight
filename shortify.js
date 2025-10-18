@@ -16,7 +16,8 @@ function parseArguments() {
     zoomLevel: 100,
     endHold: 0,
     startHold: 0,
-    background: 'B' // Default to black background
+    background: 'B', // Default to black background
+    slideOverrides: {} // Store slide-specific overrides
   };
 
   for (let i = 0; i < args.length; i++) {
@@ -49,7 +50,28 @@ function parseArguments() {
         process.exit(0);
         break;
       default:
-        if (arg.startsWith('-')) {
+        // Check for slide-specific overrides (e.g., -z1, -sh3, -eh2)
+        if (arg.startsWith('-z') && /^-z\d+$/.test(arg)) {
+          const slideNum = parseInt(arg.substring(2));
+          const value = parseFloat(args[++i]);
+          if (!config.slideOverrides[slideNum]) config.slideOverrides[slideNum] = {};
+          config.slideOverrides[slideNum].zoom = value;
+        } else if (arg.startsWith('-sh') && /^-sh\d+$/.test(arg)) {
+          const slideNum = parseInt(arg.substring(3));
+          const value = parseFloat(args[++i]);
+          if (!config.slideOverrides[slideNum]) config.slideOverrides[slideNum] = {};
+          config.slideOverrides[slideNum].startHold = value;
+        } else if (arg.startsWith('-eh') && /^-eh\d+$/.test(arg)) {
+          const slideNum = parseInt(arg.substring(3));
+          const value = parseFloat(args[++i]);
+          if (!config.slideOverrides[slideNum]) config.slideOverrides[slideNum] = {};
+          config.slideOverrides[slideNum].endHold = value;
+        } else if (arg.startsWith('-bg') && /^-bg\d+$/.test(arg)) {
+          const slideNum = parseInt(arg.substring(3));
+          const value = args[++i].toUpperCase();
+          if (!config.slideOverrides[slideNum]) config.slideOverrides[slideNum] = {};
+          config.slideOverrides[slideNum].background = value;
+        } else if (arg.startsWith('-')) {
           console.error(`Unknown flag: ${arg}`);
           showHelp();
           process.exit(1);
@@ -73,11 +95,18 @@ function showHelp() {
   console.log("  -bg, --background <W|B> Background color: W=white, B=black (default: B)");
   console.log("  -h, --help            Show this help message");
   console.log("");
+  console.log("Slide-specific overrides (use slide number after flag):");
+  console.log("  -z<num> <level>       Override zoom level for specific slide (e.g., -z1 75)");
+  console.log("  -sh<num> <sec>        Override start hold for specific slide (e.g., -sh3 1)");
+  console.log("  -eh<num> <sec>        Override end hold for specific slide (e.g., -eh2 2)");
+  console.log("  -bg<num> <W|B>        Override background for specific slide (e.g., -bg1 W)");
+  console.log("");
   console.log("Examples:");
   console.log("  node shortify.js -i video.mp4");
   console.log("  node shortify.js -i video.mp4 -z 75 -eh 3");
   console.log("  node shortify.js -i video.mp4 -z 50 -bg W");
   console.log("  node shortify.js -i video.mp4 -sh 2 -eh 3");
+  console.log("  node shortify.js -i video.mp4 -z1 75 -sh3 1 -eh2 2");
 }
 
 // Parse and validate arguments
@@ -109,12 +138,42 @@ if (!['W', 'B'].includes(config.background)) {
   process.exit(1);
 }
 
+// Validate slide overrides
+for (const [slideNum, overrides] of Object.entries(config.slideOverrides)) {
+  const num = parseInt(slideNum);
+  if (num < 1) {
+    console.error(`Error: Slide number must be 1 or greater (got ${num})`);
+    process.exit(1);
+  }
+  
+  if (overrides.zoom && (overrides.zoom <= 0 || overrides.zoom > 200)) {
+    console.error(`Error: Slide ${num} zoom level must be between 1 and 200 (got ${overrides.zoom})`);
+    process.exit(1);
+  }
+  
+  if (overrides.startHold && overrides.startHold < 0) {
+    console.error(`Error: Slide ${num} start hold must be positive or zero (got ${overrides.startHold})`);
+    process.exit(1);
+  }
+  
+  if (overrides.endHold && overrides.endHold < 0) {
+    console.error(`Error: Slide ${num} end hold must be positive or zero (got ${overrides.endHold})`);
+    process.exit(1);
+  }
+  
+  if (overrides.background && !['W', 'B'].includes(overrides.background)) {
+    console.error(`Error: Slide ${num} background must be 'W' (white) or 'B' (black) (got ${overrides.background})`);
+    process.exit(1);
+  }
+}
+
 // Set variables for backward compatibility
 const inputVideo = config.inputVideo;
 const holdDuration = config.endHold;
 const startHold = config.startHold;
 const zoomLevel = config.zoomLevel;
 const backgroundColor = config.background;
+const slideOverrides = config.slideOverrides;
 
 // Constants
 const TEMP_DIR = `temp_shortify_${Date.now()}`;
@@ -375,73 +434,152 @@ async function createPanningVideo(stillsDir, frameFiles, timestamps, videoInfo) 
     logWithTimestamp(`Last frame hold: will complete pan ${holdDuration}s early and hold at final position`);
   }
   
+  // Log slide overrides
+  for (const [slideNum, overrides] of Object.entries(slideOverrides)) {
+    const overridesList = [];
+    if (overrides.zoom) overridesList.push(`zoom=${overrides.zoom}%`);
+    if (overrides.startHold) overridesList.push(`startHold=${overrides.startHold}s`);
+    if (overrides.endHold) overridesList.push(`endHold=${overrides.endHold}s`);
+    if (overrides.background) overridesList.push(`background=${overrides.background}`);
+    logWithTimestamp(`Slide ${slideNum} overrides: ${overridesList.join(', ')}`);
+  }
+  
+  // Helper function to get slide-specific values and calculate dimensions
+  function getSlideConfig(slideIndex) {
+    const slideNum = slideIndex + 1; // Convert 0-based to 1-based
+    const overrides = slideOverrides[slideNum] || {};
+    
+    const slideZoom = overrides.zoom !== undefined ? overrides.zoom : zoomLevel;
+    const slideStartHold = overrides.startHold !== undefined ? overrides.startHold : startHold;
+    const slideEndHold = overrides.endHold !== undefined ? overrides.endHold : 0; // Default to 0, not holdDuration
+    const slideBackground = overrides.background !== undefined ? overrides.background : backgroundColor;
+    
+    // Calculate slide-specific dimensions using the base scale factor (portraitHeight / landscapeHeight)
+    const baseScaleFactor = portraitHeight / landscapeHeight;
+    const slideScaleFactor = baseScaleFactor * (slideZoom / 100);
+    const slideFinalScaleHeight = Math.round(landscapeHeight * slideScaleFactor);
+    const slideFinalScaleWidth = Math.round(landscapeWidth * slideScaleFactor);
+    
+    // For 100% zoom, don't add padding - scale directly to portrait dimensions
+    // For other zoom levels, add padding but don't exceed portrait dimensions
+    let slideCanvasWidth, slideCanvasHeight;
+    if (slideZoom === 100) {
+      slideCanvasWidth = slideFinalScaleWidth;
+      slideCanvasHeight = slideFinalScaleHeight;
+    } else {
+      slideCanvasWidth = Math.max(portraitWidth, slideFinalScaleWidth + 200);
+      slideCanvasHeight = Math.min(portraitHeight, Math.max(portraitHeight, slideFinalScaleHeight + 200));
+    }
+    
+    const slidePanDistance = Math.max(0, slideCanvasWidth - portraitWidth);
+    
+    return {
+      zoom: slideZoom,
+      startHold: slideStartHold,
+      endHold: slideEndHold,
+      background: slideBackground,
+      scaleFactor: slideScaleFactor,
+      finalScaleHeight: slideFinalScaleHeight,
+      finalScaleWidth: slideFinalScaleWidth,
+      canvasWidth: slideCanvasWidth,
+      canvasHeight: slideCanvasHeight,
+      panDistance: slidePanDistance
+    };
+  }
+
   // Create filter complex for each frame with panning
   let filterComplex = '';
   let inputs = '';
   
   for (let i = 0; i < frameFiles.length; i++) {
     const frameFile = path.join(stillsDir, frameFiles[i]);
+    
+    // Get slide-specific configuration
+    const slideConfig = getSlideConfig(i);
+    
+    // Debug logging for each slide
+    logWithTimestamp(`Slide ${i + 1}: zoom=${slideConfig.zoom}%, scale=${slideConfig.scaleFactor.toFixed(3)}, scaled=${slideConfig.finalScaleWidth}x${slideConfig.finalScaleHeight}, canvas=${slideConfig.canvasWidth}x${slideConfig.canvasHeight}, pan=${slideConfig.panDistance}px`);
+    
     // Calculate duration for this frame segment
     let duration;
     let panExpression;
     
+    // Calculate duration for this frame segment
     if (i < timestamps.length - 1) {
-      // Not the last frame - normal panning
       duration = timestamps[i + 1] - timestamps[i];
-      
-      // Check if start hold exceeds duration (only for first frame)
-      if (i === 0 && startHold > 0 && startHold >= duration) {
-        console.error(`Error: start hold duration (${startHold}s) exceeded the duration of the first slide (${duration.toFixed(1)}s)`);
-        process.exit(1);
-      }
-      
-      if (i === 0 && startHold > 0) {
-        // First frame with start hold - hold at start, then pan
-        const panTime = duration - startHold;
-        panExpression = `max(0, ${panDistance}*(t-${startHold})/${panTime})`;
-        logWithTimestamp(`First frame: holding for ${startHold.toFixed(1)}s, then panning for ${panTime.toFixed(1)}s`);
-      } else {
-        // Normal panning
-        panExpression = `${panDistance}*t/${duration}`;
-      }
     } else {
-      // Last frame - handle hold duration
       duration = videoInfo.duration - timestamps[i];
-      
-      // Check if end hold exceeds duration
-      if (holdDuration > 0 && holdDuration >= duration) {
-        console.error(`Error: end hold duration (${holdDuration}s) exceeded the duration of the last slide (${duration.toFixed(1)}s)`);
-        process.exit(1);
-      }
-      
-      if (holdDuration > 0 && duration > holdDuration) {
-        // Complete pan early, then hold at final position
-        const panTime = duration - holdDuration;
-        panExpression = `min(${panDistance}, ${panDistance}*t/${panTime})`;
-        logWithTimestamp(`Last frame: panning for ${panTime.toFixed(1)}s, then holding for ${holdDuration.toFixed(1)}s`);
-      } else {
-        // Normal panning for last frame
-        panExpression = `${panDistance}*t/${duration}`;
-      }
+    }
+    
+    // Check for start hold (applies to any slide with start hold override, or first slide with global start hold)
+    const hasStartHold = slideConfig.startHold > 0 || (i === 0 && startHold > 0);
+    const startHoldDuration = slideConfig.startHold > 0 ? slideConfig.startHold : (i === 0 ? startHold : 0);
+    
+    // Check for end hold (applies to any slide with end hold override, or last slide with global end hold)
+    const hasEndHold = slideConfig.endHold > 0 || (i === timestamps.length - 1 && holdDuration > 0);
+    const endHoldDuration = slideConfig.endHold > 0 ? slideConfig.endHold : (i === timestamps.length - 1 ? holdDuration : 0);
+    
+    
+    // Validate hold durations
+    if (hasStartHold && startHoldDuration >= duration) {
+      console.error(`Error: start hold duration (${startHoldDuration}s) exceeded the duration of slide ${i + 1} (${duration.toFixed(1)}s)`);
+      process.exit(1);
+    }
+    
+    if (hasEndHold && endHoldDuration >= duration) {
+      console.error(`Error: end hold duration (${endHoldDuration}s) exceeded the duration of slide ${i + 1} (${duration.toFixed(1)}s)`);
+      process.exit(1);
+    }
+    
+    // Calculate pan expression based on holds
+    if (hasStartHold && hasEndHold) {
+      // Both start and end hold
+      const panTime = duration - startHoldDuration - endHoldDuration;
+      panExpression = `max(0, min(${slideConfig.panDistance}, ${slideConfig.panDistance}*(t-${startHoldDuration})/${panTime}))`;
+      logWithTimestamp(`Slide ${i + 1}: holding for ${startHoldDuration.toFixed(1)}s, panning for ${panTime.toFixed(1)}s, then holding for ${endHoldDuration.toFixed(1)}s`);
+    } else if (hasStartHold) {
+      // Start hold only
+      const panTime = duration - startHoldDuration;
+      panExpression = `max(0, ${slideConfig.panDistance}*(t-${startHoldDuration})/${panTime})`;
+      logWithTimestamp(`Slide ${i + 1}: holding for ${startHoldDuration.toFixed(1)}s, then panning for ${panTime.toFixed(1)}s`);
+    } else if (hasEndHold) {
+      // End hold only
+      const panTime = duration - endHoldDuration;
+      panExpression = `min(${slideConfig.panDistance}, ${slideConfig.panDistance}*t/${panTime})`;
+      logWithTimestamp(`Slide ${i + 1}: panning for ${panTime.toFixed(1)}s, then holding for ${endHoldDuration.toFixed(1)}s`);
+    } else {
+      // Normal panning
+      panExpression = `${slideConfig.panDistance}*t/${duration}`;
     }
     
     inputs += `-loop 1 -t ${duration} -i "${frameFile}" `;
     
-    // Scale to the zoom level, then pad to canvas size, then crop to portrait size with panning
-    const canvasHorizontalOffset = Math.round((canvasWidth - finalScaleWidth) / 2);
-    const canvasVerticalOffset = Math.round((canvasHeight - finalScaleHeight) / 2);
+    // Use the slide-specific background color
+    const bgColor = slideConfig.background === 'W' ? 'white' : 'black';
     
-    // For zoom levels > 100%, we need to adjust the vertical crop position to center the content
-    let verticalCropOffset = 0;
-    if (zoomLevel > 100) {
-      // When zoomed in, center the crop vertically instead of cropping from top
-      verticalCropOffset = Math.round((finalScaleHeight - portraitHeight) / 2);
+    if (slideConfig.zoom === 100) {
+      // For 100% zoom, scale directly and crop (no padding needed)
+      logWithTimestamp(`Slide ${i + 1}: 100% zoom, direct scale and crop`);
+      filterComplex += `[${i}:v]fps=${FRAME_RATE},scale=${slideConfig.finalScaleWidth}:${slideConfig.finalScaleHeight},crop=${portraitWidth}:${portraitHeight}:'${panExpression}':0,setpts=PTS-STARTPTS[v${i}];`;
+    } else {
+      // For other zoom levels, pad to canvas size, then crop
+      const canvasHorizontalOffset = Math.round((slideConfig.canvasWidth - slideConfig.finalScaleWidth) / 2);
+      const canvasVerticalOffset = Math.round((slideConfig.canvasHeight - slideConfig.finalScaleHeight) / 2);
+      
+      logWithTimestamp(`Slide ${i + 1}: canvas offsets = ${canvasHorizontalOffset}x${canvasVerticalOffset}`);
+      
+      // For zoom levels > 100%, we need to adjust the vertical crop position to center the content
+      let verticalCropOffset = 0;
+      if (slideConfig.zoom > 100) {
+        // When zoomed in, center the crop vertically instead of cropping from top
+        verticalCropOffset = Math.round((slideConfig.finalScaleHeight - portraitHeight) / 2);
+        logWithTimestamp(`Slide ${i + 1}: zoomed in, vertical offset = ${verticalCropOffset}px`);
+      } else {
+        logWithTimestamp(`Slide ${i + 1}: zoomed out, vertical offset = 0px`);
+      }
+      
+      filterComplex += `[${i}:v]fps=${FRAME_RATE},scale=${slideConfig.finalScaleWidth}:${slideConfig.finalScaleHeight},pad=${slideConfig.canvasWidth}:${slideConfig.canvasHeight}:${canvasHorizontalOffset}:${canvasVerticalOffset}:${bgColor},crop=${portraitWidth}:${portraitHeight}:'${panExpression}':${verticalCropOffset},setpts=PTS-STARTPTS[v${i}];`;
     }
-    
-    // Use the specified background color
-    const bgColor = backgroundColor === 'W' ? 'white' : 'black';
-    
-    filterComplex += `[${i}:v]fps=${FRAME_RATE},scale=${finalScaleWidth}:${finalScaleHeight},pad=${canvasWidth}:${canvasHeight}:${canvasHorizontalOffset}:${canvasVerticalOffset}:${bgColor},crop=${portraitWidth}:${portraitHeight}:'${panExpression}':${verticalCropOffset},setpts=PTS-STARTPTS[v${i}];`;
   }
   
   // Concatenate all panned frames
