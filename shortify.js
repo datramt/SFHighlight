@@ -11,17 +11,24 @@ const unlink = util.promisify(fs.unlink);
 // Input arguments
 const inputVideo = process.argv[2];
 const holdDuration = parseFloat(process.argv[3]) || 0; // Optional: seconds to hold last frame at final position
+const zoomLevel = parseFloat(process.argv[4]) || 100; // Optional: zoom level as percentage (100 = 100% match, 50 = 50% zoom out)
 
 // Validate input arguments
 if (!inputVideo) {
-  console.error("Usage: node shortify.js <inputVideo> [holdDuration]");
+  console.error("Usage: node shortify.js <inputVideo> [holdDuration] [zoomLevel]");
   console.error("  inputVideo: Path to the video file");
   console.error("  holdDuration: (Optional) Seconds to hold the last frame still at final pan position (default: 0)");
+  console.error("  zoomLevel: (Optional) Zoom level as percentage - 100=100% match, 50=50% zoom out (default: 100)");
   process.exit(1);
 }
 
 if (holdDuration < 0) {
   console.error("Error: holdDuration must be a positive number or zero");
+  process.exit(1);
+}
+
+if (zoomLevel <= 0 || zoomLevel > 200) {
+  console.error("Error: zoomLevel must be between 1 and 200 (percentage)");
   process.exit(1);
 }
 
@@ -255,13 +262,26 @@ async function createPanningVideo(stillsDir, frameFiles, timestamps, videoInfo) 
   }
   
   // Scale factor to fit landscape height to portrait height
-  const scaleFactor = portraitHeight / landscapeHeight;
-  const scaledWidth = Math.round(landscapeWidth * scaleFactor);
+  const baseScaleFactor = portraitHeight / landscapeHeight;
+  
+  // Apply zoom level (100 = 100% match, 50 = 50% zoom out, etc.)
+  const zoomFactor = zoomLevel / 100;
+  const scaleFactor = baseScaleFactor * zoomFactor;
+  
+  // Calculate final dimensions after zoom
+  const finalScaleHeight = Math.round(landscapeHeight * scaleFactor);
+  const finalScaleWidth = Math.round(landscapeWidth * scaleFactor);
+  
+  // For zoom out, we want to see more content, so we need a larger canvas
+  // The canvas should be large enough to show the zoomed content plus some extra
+  const canvasWidth = Math.max(portraitWidth, finalScaleWidth + 200); // Extra 200px for panning
+  const canvasHeight = Math.max(portraitHeight, finalScaleHeight + 200); // Extra 200px for panning
   
   // Pan distance (how much we need to pan from left to right)
-  const panDistance = scaledWidth - portraitWidth;
+  const panDistance = Math.max(0, finalScaleWidth - portraitWidth);
   
-  logWithTimestamp(`Panning parameters: input=${landscapeWidth}x${landscapeHeight}, output=${portraitWidth}x${portraitHeight}, scale=${scaleFactor.toFixed(3)}, pan distance=${panDistance.toFixed(0)}px`);
+  logWithTimestamp(`Panning parameters: input=${landscapeWidth}x${landscapeHeight}, output=${portraitWidth}x${portraitHeight}`);
+  logWithTimestamp(`Zoom: ${zoomLevel}% (scale=${scaleFactor.toFixed(3)}), pan distance=${panDistance.toFixed(0)}px`);
   if (holdDuration > 0) {
     logWithTimestamp(`Last frame hold: will complete pan ${holdDuration}s early and hold at final position`);
   }
@@ -297,8 +317,10 @@ async function createPanningVideo(stillsDir, frameFiles, timestamps, videoInfo) 
     
     inputs += `-loop 1 -t ${duration} -i "${frameFile}" `;
     
-    // Create panning filter for this frame; force 60fps BEFORE crop so pan updates 60x/sec
-    filterComplex += `[${i}:v]fps=${FRAME_RATE},scale=${scaledWidth}:${portraitHeight},crop=${portraitWidth}:${portraitHeight}:'${panExpression}':0,setpts=PTS-STARTPTS[v${i}];`;
+    // Scale to the zoom level, then pad to canvas size, then crop to portrait size with panning
+    const canvasHorizontalOffset = Math.round((canvasWidth - finalScaleWidth) / 2);
+    const canvasVerticalOffset = Math.round((canvasHeight - finalScaleHeight) / 2);
+    filterComplex += `[${i}:v]fps=${FRAME_RATE},scale=${finalScaleWidth}:${finalScaleHeight},pad=${canvasWidth}:${canvasHeight}:${canvasHorizontalOffset}:${canvasVerticalOffset}:black,crop=${portraitWidth}:${portraitHeight}:'${panExpression}':0,setpts=PTS-STARTPTS[v${i}];`;
   }
   
   // Concatenate all panned frames
