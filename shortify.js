@@ -16,6 +16,8 @@ function parseArguments() {
     zoomLevel: 100,
     endHold: 0,
     startHold: 0,
+    startOffset: 0,
+    endOffset: 0,
     fadeInDuration: 0.02,
     fadeOutDuration: 0.5,
     tiltShiftEnabled: false,
@@ -42,6 +44,14 @@ function parseArguments() {
       case '-sh':
       case '--start-hold':
         config.startHold = parseFloat(args[++i]);
+        break;
+      case '-so':
+      case '--start-offset':
+        config.startOffset = parseFloat(args[++i]);
+        break;
+      case '-eo':
+      case '--end-offset':
+        config.endOffset = parseFloat(args[++i]);
         break;
       case '-fi':
       case '--fade-in':
@@ -81,6 +91,16 @@ function parseArguments() {
           const value = parseFloat(args[++i]);
           if (!config.slideOverrides[slideNum]) config.slideOverrides[slideNum] = {};
           config.slideOverrides[slideNum].endHold = value;
+        } else if (arg.startsWith('-so') && /^-so\d+$/.test(arg)) {
+          const slideNum = parseInt(arg.substring(3));
+          const value = parseFloat(args[++i]);
+          if (!config.slideOverrides[slideNum]) config.slideOverrides[slideNum] = {};
+          config.slideOverrides[slideNum].startOffset = value;
+        } else if (arg.startsWith('-eo') && /^-eo\d+$/.test(arg)) {
+          const slideNum = parseInt(arg.substring(3));
+          const value = parseFloat(args[++i]);
+          if (!config.slideOverrides[slideNum]) config.slideOverrides[slideNum] = {};
+          config.slideOverrides[slideNum].endOffset = value;
         } else if (arg.startsWith('-bg') && /^-bg\d+$/.test(arg)) {
           const slideNum = parseInt(arg.substring(3));
           const value = args[++i].toUpperCase();
@@ -107,6 +127,8 @@ function showHelp() {
   console.log("                        100 = 100% match, 50 = 50% zoom out, 150 = 150% zoom in");
   console.log("  -eh, --end-hold <sec>  Seconds to hold last frame at final position (default: 0)");
   console.log("  -sh, --start-hold <sec> Seconds to hold first frame at start position (default: 0)");
+  console.log("  -so, --start-offset <units> Start pan before/after normal start, in output widths (default: 0)");
+  console.log("  -eo, --end-offset <units> End pan after/before normal end, in output widths (default: 0)");
   console.log("  -fi, --fade-in <sec>  Audio fade-in duration at start of video (default: 0.02)");
   console.log("  -fo, --fade-out <sec> Audio fade-out duration at end of video (default: 0.5)");
   console.log("  -ts, --tilt-shift     Blur the left/right sides of the final portrait canvas");
@@ -117,11 +139,14 @@ function showHelp() {
   console.log("  -z<num> <level>       Override zoom level for specific slide (e.g., -z1 75)");
   console.log("  -sh<num> <sec>        Override start hold for specific slide (e.g., -sh3 1)");
   console.log("  -eh<num> <sec>        Override end hold for specific slide (e.g., -eh2 2)");
+  console.log("  -so<num> <units>      Override start offset for specific slide (e.g., -so3 0.25)");
+  console.log("  -eo<num> <units>      Override end offset for specific slide (e.g., -eo2 0.5)");
   console.log("  -bg<num> <W|B>        Override background for specific slide (e.g., -bg1 W)");
   console.log("");
   console.log("Examples:");
   console.log("  node shortify.js -i video.mp4");
   console.log("  node shortify.js -i video.mp4 -z 75 -eh 3");
+  console.log("  node shortify.js -i video.mp4 -so 0.25 -eo 0.5");
   console.log("  node shortify.js -i video.mp4 -fi 0.1 -fo 1.25");
   console.log("  node shortify.js -i video.mp4 -ts");
   console.log("  node shortify.js -i video.mp4 -z 50 -bg W");
@@ -150,6 +175,16 @@ if (config.endHold < 0) {
 
 if (config.startHold < 0) {
   console.error("Error: startHold must be a positive number or zero");
+  process.exit(1);
+}
+
+if (isNaN(config.startOffset)) {
+  console.error("Error: startOffset must be a number");
+  process.exit(1);
+}
+
+if (isNaN(config.endOffset)) {
+  console.error("Error: endOffset must be a number");
   process.exit(1);
 }
 
@@ -190,6 +225,16 @@ for (const [slideNum, overrides] of Object.entries(config.slideOverrides)) {
     console.error(`Error: Slide ${num} end hold must be positive or zero (got ${overrides.endHold})`);
     process.exit(1);
   }
+
+  if (overrides.startOffset !== undefined && isNaN(overrides.startOffset)) {
+    console.error(`Error: Slide ${num} start offset must be a number (got ${overrides.startOffset})`);
+    process.exit(1);
+  }
+
+  if (overrides.endOffset !== undefined && isNaN(overrides.endOffset)) {
+    console.error(`Error: Slide ${num} end offset must be a number (got ${overrides.endOffset})`);
+    process.exit(1);
+  }
   
   if (overrides.background && !['W', 'B'].includes(overrides.background)) {
     console.error(`Error: Slide ${num} background must be 'W' (white) or 'B' (black) (got ${overrides.background})`);
@@ -201,6 +246,8 @@ for (const [slideNum, overrides] of Object.entries(config.slideOverrides)) {
 const inputVideo = config.inputVideo;
 const holdDuration = config.endHold;
 const startHold = config.startHold;
+const startOffset = config.startOffset;
+const endOffset = config.endOffset;
 const zoomLevel = config.zoomLevel;
 const backgroundColor = config.background;
 const slideOverrides = config.slideOverrides;
@@ -473,6 +520,8 @@ async function createPanningVideo(stillsDir, frameFiles, timestamps, videoInfo) 
     if (overrides.zoom) overridesList.push(`zoom=${overrides.zoom}%`);
     if (overrides.startHold) overridesList.push(`startHold=${overrides.startHold}s`);
     if (overrides.endHold) overridesList.push(`endHold=${overrides.endHold}s`);
+    if (overrides.startOffset !== undefined) overridesList.push(`startOffset=${overrides.startOffset}`);
+    if (overrides.endOffset !== undefined) overridesList.push(`endOffset=${overrides.endOffset}`);
     if (overrides.background) overridesList.push(`background=${overrides.background}`);
     logWithTimestamp(`Slide ${slideNum} overrides: ${overridesList.join(', ')}`);
   }
@@ -485,6 +534,8 @@ async function createPanningVideo(stillsDir, frameFiles, timestamps, videoInfo) 
     const slideZoom = overrides.zoom !== undefined ? overrides.zoom : zoomLevel;
     const slideStartHold = overrides.startHold !== undefined ? overrides.startHold : startHold;
     const slideEndHold = overrides.endHold !== undefined ? overrides.endHold : 0; // Default to 0, not holdDuration
+    const slideStartOffset = overrides.startOffset !== undefined ? overrides.startOffset : startOffset;
+    const slideEndOffset = overrides.endOffset !== undefined ? overrides.endOffset : endOffset;
     const slideBackground = overrides.background !== undefined ? overrides.background : backgroundColor;
     
     // Calculate slide-specific dimensions using the base scale factor (portraitHeight / landscapeHeight)
@@ -504,18 +555,36 @@ async function createPanningVideo(stillsDir, frameFiles, timestamps, videoInfo) 
       slideCanvasHeight = Math.min(portraitHeight, Math.max(portraitHeight, slideFinalScaleHeight + 200));
     }
     
-    const slidePanDistance = Math.max(0, slideCanvasWidth - portraitWidth);
+    const basePanDistance = Math.max(0, slideCanvasWidth - portraitWidth);
+    const startOffsetPx = slideStartOffset * portraitWidth;
+    const endOffsetPx = slideEndOffset * portraitWidth;
+    const leftOffsetPadding = Math.max(0, Math.ceil(startOffsetPx));
+    const rightOffsetPadding = Math.max(0, Math.ceil(endOffsetPx));
+    const paddedCanvasWidth = slideCanvasWidth + leftOffsetPadding + rightOffsetPadding;
+    const panStartX = leftOffsetPadding - startOffsetPx;
+    const panEndX = leftOffsetPadding + basePanDistance + endOffsetPx;
+    const slidePanDistance = panEndX - panStartX;
     
     return {
       zoom: slideZoom,
       startHold: slideStartHold,
       endHold: slideEndHold,
+      startOffset: slideStartOffset,
+      endOffset: slideEndOffset,
+      startOffsetPx,
+      endOffsetPx,
+      leftOffsetPadding,
+      rightOffsetPadding,
       background: slideBackground,
       scaleFactor: slideScaleFactor,
       finalScaleHeight: slideFinalScaleHeight,
       finalScaleWidth: slideFinalScaleWidth,
-      canvasWidth: slideCanvasWidth,
+      baseCanvasWidth: slideCanvasWidth,
+      canvasWidth: paddedCanvasWidth,
       canvasHeight: slideCanvasHeight,
+      basePanDistance,
+      panStartX,
+      panEndX,
       panDistance: slidePanDistance
     };
   }
@@ -531,7 +600,7 @@ async function createPanningVideo(stillsDir, frameFiles, timestamps, videoInfo) 
     const slideConfig = getSlideConfig(i);
     
     // Debug logging for each slide
-    logWithTimestamp(`Slide ${i + 1}: zoom=${slideConfig.zoom}%, scale=${slideConfig.scaleFactor.toFixed(3)}, scaled=${slideConfig.finalScaleWidth}x${slideConfig.finalScaleHeight}, canvas=${slideConfig.canvasWidth}x${slideConfig.canvasHeight}, pan=${slideConfig.panDistance}px`);
+    logWithTimestamp(`Slide ${i + 1}: zoom=${slideConfig.zoom}%, scale=${slideConfig.scaleFactor.toFixed(3)}, scaled=${slideConfig.finalScaleWidth}x${slideConfig.finalScaleHeight}, canvas=${slideConfig.canvasWidth}x${slideConfig.canvasHeight}, pan=${slideConfig.panStartX.toFixed(1)}->${slideConfig.panEndX.toFixed(1)} (${slideConfig.panDistance.toFixed(1)}px), offsets=${slideConfig.startOffset}/${slideConfig.endOffset} (${slideConfig.startOffsetPx.toFixed(1)}px/${slideConfig.endOffsetPx.toFixed(1)}px)`);
     
     // Calculate duration for this frame segment
     let duration;
@@ -563,26 +632,37 @@ async function createPanningVideo(stillsDir, frameFiles, timestamps, videoInfo) 
       console.error(`Error: end hold duration (${endHoldDuration}s) exceeded the duration of slide ${i + 1} (${duration.toFixed(1)}s)`);
       process.exit(1);
     }
+
+    if (slideConfig.panEndX < slideConfig.panStartX) {
+      console.error(`Error: Slide ${i + 1} offsets reverse the pan direction (start=${slideConfig.panStartX.toFixed(1)}px, end=${slideConfig.panEndX.toFixed(1)}px)`);
+      process.exit(1);
+    }
+
+    const maxCropX = slideConfig.canvasWidth - portraitWidth;
+    if (slideConfig.panStartX < 0 || slideConfig.panStartX > maxCropX || slideConfig.panEndX < 0 || slideConfig.panEndX > maxCropX) {
+      console.error(`Error: Slide ${i + 1} offsets produce an out-of-bounds crop (start=${slideConfig.panStartX.toFixed(1)}px, end=${slideConfig.panEndX.toFixed(1)}px, valid=0-${maxCropX.toFixed(1)}px)`);
+      process.exit(1);
+    }
     
     // Calculate pan expression based on holds
     if (hasStartHold && hasEndHold) {
       // Both start and end hold
       const panTime = duration - startHoldDuration - endHoldDuration;
-      panExpression = `max(0, min(${slideConfig.panDistance}, ${slideConfig.panDistance}*(t-${startHoldDuration})/${panTime}))`;
+      panExpression = `${slideConfig.panStartX}+${slideConfig.panDistance}*max(0,min(1,(t-${startHoldDuration})/${panTime}))`;
       logWithTimestamp(`Slide ${i + 1}: holding for ${startHoldDuration.toFixed(1)}s, panning for ${panTime.toFixed(1)}s, then holding for ${endHoldDuration.toFixed(1)}s`);
     } else if (hasStartHold) {
       // Start hold only
       const panTime = duration - startHoldDuration;
-      panExpression = `max(0, ${slideConfig.panDistance}*(t-${startHoldDuration})/${panTime})`;
+      panExpression = `${slideConfig.panStartX}+${slideConfig.panDistance}*max(0,(t-${startHoldDuration})/${panTime})`;
       logWithTimestamp(`Slide ${i + 1}: holding for ${startHoldDuration.toFixed(1)}s, then panning for ${panTime.toFixed(1)}s`);
     } else if (hasEndHold) {
       // End hold only
       const panTime = duration - endHoldDuration;
-      panExpression = `min(${slideConfig.panDistance}, ${slideConfig.panDistance}*t/${panTime})`;
+      panExpression = `${slideConfig.panStartX}+${slideConfig.panDistance}*min(1,t/${panTime})`;
       logWithTimestamp(`Slide ${i + 1}: panning for ${panTime.toFixed(1)}s, then holding for ${endHoldDuration.toFixed(1)}s`);
     } else {
       // Normal panning
-      panExpression = `${slideConfig.panDistance}*t/${duration}`;
+      panExpression = `${slideConfig.panStartX}+${slideConfig.panDistance}*t/${duration}`;
     }
     
     inputs += `-loop 1 -t ${duration} -i "${frameFile}" `;
@@ -591,12 +671,17 @@ async function createPanningVideo(stillsDir, frameFiles, timestamps, videoInfo) 
     const bgColor = slideConfig.background === 'W' ? 'white' : 'black';
     
     if (slideConfig.zoom === 100) {
-      // For 100% zoom, scale directly and crop (no padding needed)
-      logWithTimestamp(`Slide ${i + 1}: 100% zoom, direct scale and crop`);
-      filterComplex += `[${i}:v]fps=${FRAME_RATE},scale=${slideConfig.finalScaleWidth}:${slideConfig.finalScaleHeight},crop=${portraitWidth}:${portraitHeight}:'${panExpression}':0,setpts=PTS-STARTPTS[v${i}];`;
+      // For 100% zoom, only add padding when offsets need crop-safe space beyond normal edges
+      if (slideConfig.leftOffsetPadding > 0 || slideConfig.rightOffsetPadding > 0) {
+        logWithTimestamp(`Slide ${i + 1}: 100% zoom with offset padding = ${slideConfig.leftOffsetPadding}px/${slideConfig.rightOffsetPadding}px`);
+        filterComplex += `[${i}:v]fps=${FRAME_RATE},scale=${slideConfig.finalScaleWidth}:${slideConfig.finalScaleHeight},pad=${slideConfig.canvasWidth}:${slideConfig.canvasHeight}:${slideConfig.leftOffsetPadding}:0:${bgColor},crop=${portraitWidth}:${portraitHeight}:'${panExpression}':0,setpts=PTS-STARTPTS[v${i}];`;
+      } else {
+        logWithTimestamp(`Slide ${i + 1}: 100% zoom, direct scale and crop`);
+        filterComplex += `[${i}:v]fps=${FRAME_RATE},scale=${slideConfig.finalScaleWidth}:${slideConfig.finalScaleHeight},crop=${portraitWidth}:${portraitHeight}:'${panExpression}':0,setpts=PTS-STARTPTS[v${i}];`;
+      }
     } else {
       // For other zoom levels, pad to canvas size, then crop
-      const canvasHorizontalOffset = Math.round((slideConfig.canvasWidth - slideConfig.finalScaleWidth) / 2);
+      const canvasHorizontalOffset = Math.round((slideConfig.baseCanvasWidth - slideConfig.finalScaleWidth) / 2) + slideConfig.leftOffsetPadding;
       const canvasVerticalOffset = Math.round((slideConfig.canvasHeight - slideConfig.finalScaleHeight) / 2);
       
       logWithTimestamp(`Slide ${i + 1}: canvas offsets = ${canvasHorizontalOffset}x${canvasVerticalOffset}`);
