@@ -21,7 +21,7 @@ function parseArguments() {
     fadeInDuration: 0.02,
     fadeOutDuration: 0.5,
     tiltShiftEnabled: false,
-    background: 'B', // Default to black background
+    background: 'A', // Default to auto-detected background
     snapshots: [],
     slideOverrides: {} // Store slide-specific overrides
   };
@@ -68,7 +68,7 @@ function parseArguments() {
         break;
       case '-bg':
       case '--background':
-        config.background = args[++i].toUpperCase();
+        config.background = normalizeBackground(args[++i]);
         break;
       case '-h':
       case '--help':
@@ -110,7 +110,7 @@ function parseArguments() {
           config.slideOverrides[slideNum].endOffset = value;
         } else if (arg.startsWith('-bg') && /^-bg\d+$/.test(arg)) {
           const slideNum = parseInt(arg.substring(3));
-          const value = args[++i].toUpperCase();
+          const value = normalizeBackground(args[++i]);
           if (!config.slideOverrides[slideNum]) config.slideOverrides[slideNum] = {};
           config.slideOverrides[slideNum].background = value;
         } else if (arg.startsWith('-')) {
@@ -123,6 +123,11 @@ function parseArguments() {
   }
 
   return config;
+}
+
+function normalizeBackground(value) {
+  const normalized = value.toUpperCase();
+  return normalized === 'AUTO' ? 'A' : normalized;
 }
 
 function showHelp() {
@@ -140,7 +145,7 @@ function showHelp() {
   console.log("  -fo, --fade-out <sec> Audio fade-out duration at end of video (default: 0.5)");
   console.log("  -ts, --tilt-shift     Blur the left/right sides of the final portrait canvas");
   console.log("  -ss<num><b|e>         Save snapshot for slide beginning/end, then exit (e.g., -ss1b)");
-  console.log("  -bg, --background <W|B> Background color: W=white, B=black (default: B)");
+  console.log("  -bg, --background <A|W|B> Background color: A=auto, W=white, B=black (default: A)");
   console.log("  -h, --help            Show this help message");
   console.log("");
   console.log("Slide-specific overrides (use slide number after flag):");
@@ -149,7 +154,7 @@ function showHelp() {
   console.log("  -eh<num> <sec>        Override end hold for specific slide (e.g., -eh2 2)");
   console.log("  -so<num> <units>      Override start offset for specific slide (e.g., -so3 0.25)");
   console.log("  -eo<num> <units>      Override end offset for specific slide (e.g., -eo2 0.5)");
-  console.log("  -bg<num> <W|B>        Override background for specific slide (e.g., -bg1 W)");
+  console.log("  -bg<num> <A|W|B>      Override background for specific slide (e.g., -bg1 W)");
   console.log("");
   console.log("Examples:");
   console.log("  node shortify.js -i video.mp4");
@@ -207,8 +212,8 @@ if (isNaN(config.fadeOutDuration) || config.fadeOutDuration < 0) {
   process.exit(1);
 }
 
-if (!['W', 'B'].includes(config.background)) {
-  console.error("Error: background must be 'W' (white) or 'B' (black)");
+if (!['A', 'W', 'B'].includes(config.background)) {
+  console.error("Error: background must be 'A' (auto), 'W' (white), or 'B' (black)");
   process.exit(1);
 }
 
@@ -245,8 +250,8 @@ for (const [slideNum, overrides] of Object.entries(config.slideOverrides)) {
     process.exit(1);
   }
   
-  if (overrides.background && !['W', 'B'].includes(overrides.background)) {
-    console.error(`Error: Slide ${num} background must be 'W' (white) or 'B' (black) (got ${overrides.background})`);
+  if (overrides.background && !['A', 'W', 'B'].includes(overrides.background)) {
+    console.error(`Error: Slide ${num} background must be 'A' (auto), 'W' (white), or 'B' (black) (got ${overrides.background})`);
     process.exit(1);
   }
 }
@@ -302,6 +307,141 @@ async function safeExec(command, stepDescription) {
     console.error(`Failed during: ${stepDescription}\nCommand: ${command}\nError: ${error.message}`);
     process.exit(1);
   }
+}
+
+function colorDistance(a, b) {
+  return Math.sqrt(
+    Math.pow(a.r - b.r, 2) +
+    Math.pow(a.g - b.g, 2) +
+    Math.pow(a.b - b.b, 2)
+  );
+}
+
+function toHexColor(color) {
+  const toHex = (value) => Math.max(0, Math.min(255, Math.round(value)))
+    .toString(16)
+    .padStart(2, '0');
+  return `#${toHex(color.r)}${toHex(color.g)}${toHex(color.b)}`;
+}
+
+function median(values) {
+  const sorted = [...values].sort((a, b) => a - b);
+  const middle = Math.floor(sorted.length / 2);
+  return sorted.length % 2 === 0
+    ? (sorted[middle - 1] + sorted[middle]) / 2
+    : sorted[middle];
+}
+
+async function sampleBackgroundPatch(video, sampleTime, patch) {
+  const command = `ffmpeg -hide_banner -loglevel error -ss ${sampleTime} -i "${video}" -vf "crop=${patch.size}:${patch.size}:${patch.x}:${patch.y},format=rgb24" -frames:v 1 -f rawvideo -`;
+  const { stdout } = await execPromise(command, { encoding: 'buffer', maxBuffer: 1024 * 1024 });
+  const pixelCount = Math.floor(stdout.length / 3);
+
+  if (pixelCount === 0) {
+    throw new Error(`No pixels returned for background patch at ${patch.x},${patch.y}`);
+  }
+
+  let r = 0;
+  let g = 0;
+  let b = 0;
+  for (let i = 0; i < stdout.length; i += 3) {
+    r += stdout[i];
+    g += stdout[i + 1];
+    b += stdout[i + 2];
+  }
+
+  const mean = {
+    r: r / pixelCount,
+    g: g / pixelCount,
+    b: b / pixelCount
+  };
+
+  let variance = 0;
+  for (let i = 0; i < stdout.length; i += 3) {
+    variance += Math.pow(stdout[i] - mean.r, 2);
+    variance += Math.pow(stdout[i + 1] - mean.g, 2);
+    variance += Math.pow(stdout[i + 2] - mean.b, 2);
+  }
+
+  return {
+    ...patch,
+    ...mean,
+    stdDev: Math.sqrt(variance / (pixelCount * 3))
+  };
+}
+
+function getBackgroundSamplePatches(videoInfo) {
+  const patchSize = Math.max(8, Math.min(24, Math.floor(Math.min(videoInfo.width, videoInfo.height) / 12)));
+  const inset = Math.max(8, Math.min(32, Math.floor(Math.min(videoInfo.width, videoInfo.height) / 24)));
+  const xLeft = inset;
+  const xCenter = Math.floor((videoInfo.width - patchSize) / 2);
+  const xRight = videoInfo.width - inset - patchSize;
+  const yTop = inset;
+  const yCenter = Math.floor((videoInfo.height - patchSize) / 2);
+  const yBottom = videoInfo.height - inset - patchSize;
+
+  return [
+    { name: 'top-left', x: xLeft, y: yTop, size: patchSize },
+    { name: 'top-center', x: xCenter, y: yTop, size: patchSize },
+    { name: 'top-right', x: xRight, y: yTop, size: patchSize },
+    { name: 'middle-left', x: xLeft, y: yCenter, size: patchSize },
+    { name: 'middle-right', x: xRight, y: yCenter, size: patchSize },
+    { name: 'bottom-left', x: xLeft, y: yBottom, size: patchSize },
+    { name: 'bottom-center', x: xCenter, y: yBottom, size: patchSize },
+    { name: 'bottom-right', x: xRight, y: yBottom, size: patchSize }
+  ];
+}
+
+function chooseBackgroundSample(samples) {
+  const lowVarianceSamples = samples.filter(sample => sample.stdDev <= 18);
+  const candidates = lowVarianceSamples.length >= 3 ? lowVarianceSamples : samples;
+  let bestCluster = [];
+
+  for (const sample of candidates) {
+    const cluster = candidates.filter(candidate => colorDistance(sample, candidate) <= 30);
+    if (cluster.length > bestCluster.length) {
+      bestCluster = cluster;
+    }
+  }
+
+  const finalSamples = bestCluster.length >= 2 ? bestCluster : candidates;
+  return {
+    r: median(finalSamples.map(sample => sample.r)),
+    g: median(finalSamples.map(sample => sample.g)),
+    b: median(finalSamples.map(sample => sample.b)),
+    sampleCount: finalSamples.length,
+    rejectedCount: samples.length - finalSamples.length
+  };
+}
+
+function usesAutoBackground() {
+  return backgroundColor === 'A' ||
+    Object.values(slideOverrides).some(overrides => overrides.background === 'A');
+}
+
+async function detectBackgroundColor(video, videoInfo) {
+  if (!usesAutoBackground()) {
+    return null;
+  }
+
+  const sampleTime = Math.min(0.1, Math.max(0, videoInfo.duration / 2));
+  const patches = getBackgroundSamplePatches(videoInfo);
+  const samples = [];
+
+  for (const patch of patches) {
+    samples.push(await sampleBackgroundPatch(video, sampleTime, patch));
+  }
+
+  const detected = chooseBackgroundSample(samples);
+  const hexColor = toHexColor(detected);
+  const sampleSummary = samples
+    .map(sample => `${sample.name}=${toHexColor(sample)} sd=${sample.stdDev.toFixed(1)}`)
+    .join(', ');
+
+  logWithTimestamp(`Background samples: ${sampleSummary}`);
+  logWithTimestamp(`Detected background color: ${hexColor} (${detected.sampleCount}/${samples.length} samples used, ${detected.rejectedCount} rejected)`);
+
+  return hexColor;
 }
 
 // Function to get video dimensions and duration
@@ -472,7 +612,7 @@ async function getFrameTimestamps(inputVideo, frameCount, usedRegularIntervals) 
   return timestamps;
 }
 
-function createPanningContext(videoInfo, shouldLog = true) {
+function createPanningContext(videoInfo, shouldLog = true, detectedBackgroundColor = 'black') {
   // Calculate panning parameters based on input resolution
   const landscapeWidth = videoInfo.width;
   const landscapeHeight = videoInfo.height;
@@ -538,6 +678,12 @@ function createPanningContext(videoInfo, shouldLog = true) {
   }
   
   // Helper function to get slide-specific values and calculate dimensions
+  function resolveBackgroundColor(background) {
+    if (background === 'W') return 'white';
+    if (background === 'B') return 'black';
+    return detectedBackgroundColor ? detectedBackgroundColor.replace('#', '0x') : 'black';
+  }
+
   function getSlideConfig(slideIndex) {
     const slideNum = slideIndex + 1; // Convert 0-based to 1-based
     const overrides = slideOverrides[slideNum] || {};
@@ -587,6 +733,7 @@ function createPanningContext(videoInfo, shouldLog = true) {
       leftOffsetPadding,
       rightOffsetPadding,
       background: slideBackground,
+      backgroundColor: resolveBackgroundColor(slideBackground),
       scaleFactor: slideScaleFactor,
       finalScaleHeight: slideFinalScaleHeight,
       finalScaleWidth: slideFinalScaleWidth,
@@ -621,9 +768,9 @@ function validateSlideCrop(slideConfig, slideIndex, portraitWidth) {
 }
 
 // Function to create panning video from still frames
-async function createPanningVideo(stillsDir, frameFiles, timestamps, videoInfo) {
+async function createPanningVideo(stillsDir, frameFiles, timestamps, videoInfo, detectedBackgroundColor) {
   const outputVideo = path.join(TEMP_DIR, 'panning_video.mp4');
-  const { portraitHeight, portraitWidth, getSlideConfig } = createPanningContext(videoInfo);
+  const { portraitHeight, portraitWidth, getSlideConfig } = createPanningContext(videoInfo, true, detectedBackgroundColor);
 
   // Create filter complex for each frame with panning
   let filterComplex = '';
@@ -694,8 +841,8 @@ async function createPanningVideo(stillsDir, frameFiles, timestamps, videoInfo) 
     
     inputs += `-loop 1 -t ${duration} -i "${frameFile}" `;
     
-    // Use the slide-specific background color
-    const bgColor = slideConfig.background === 'W' ? 'white' : 'black';
+    // Use the slide-specific or auto-detected background color
+    const bgColor = slideConfig.backgroundColor;
     
     if (slideConfig.zoom === 100) {
       // For 100% zoom, only add padding when offsets need crop-safe space beyond normal edges
@@ -741,7 +888,7 @@ async function createPanningVideo(stillsDir, frameFiles, timestamps, videoInfo) 
 }
 
 function buildSnapshotFilter(slideConfig, cropX, portraitWidth, portraitHeight) {
-  const bgColor = slideConfig.background === 'W' ? 'white' : 'black';
+  const bgColor = slideConfig.backgroundColor;
 
   if (slideConfig.zoom === 100) {
     if (slideConfig.leftOffsetPadding > 0 || slideConfig.rightOffsetPadding > 0) {
@@ -760,8 +907,8 @@ function buildSnapshotFilter(slideConfig, cropX, portraitWidth, portraitHeight) 
   return `scale=${slideConfig.finalScaleWidth}:${slideConfig.finalScaleHeight},pad=${slideConfig.canvasWidth}:${slideConfig.canvasHeight}:${canvasHorizontalOffset}:${canvasVerticalOffset}:${bgColor},crop=${portraitWidth}:${portraitHeight}:${cropX}:${verticalCropOffset}`;
 }
 
-async function createSnapshots(stillsDir, frameFiles, videoInfo) {
-  const { portraitHeight, portraitWidth, getSlideConfig } = createPanningContext(videoInfo);
+async function createSnapshots(stillsDir, frameFiles, videoInfo, detectedBackgroundColor) {
+  const { portraitHeight, portraitWidth, getSlideConfig } = createPanningContext(videoInfo, true, detectedBackgroundColor);
 
   for (const snapshot of snapshots) {
     const slideIndex = snapshot.slideNum - 1;
@@ -884,6 +1031,7 @@ async function processVideo() {
     // Get video information
     const videoInfo = await getVideoInfo(inputVideo);
     logWithTimestamp(`Video dimensions: ${videoInfo.width}x${videoInfo.height}, duration: ${videoInfo.duration}s`);
+    const detectedBackgroundColor = await detectBackgroundColor(inputVideo, videoInfo);
     
     // Extract still frames and timestamps
     const { stillsDir, frameFiles, usedRegularIntervals, timestamps } = await extractStills(inputVideo);
@@ -896,14 +1044,14 @@ async function processVideo() {
     logWithTimestamp(`Frame timestamps: ${finalTimestamps.map(t => t.toFixed(2)).join(', ')}`);
 
     if (snapshots.length > 0) {
-      await createSnapshots(stillsDir, frameFiles, videoInfo);
+      await createSnapshots(stillsDir, frameFiles, videoInfo, detectedBackgroundColor);
       await cleanup([TEMP_DIR]);
       logWithTimestamp("Snapshot processing complete.");
       return;
     }
     
     // Create panning video
-    const panningVideo = await createPanningVideo(stillsDir, frameFiles, finalTimestamps, videoInfo);
+    const panningVideo = await createPanningVideo(stillsDir, frameFiles, finalTimestamps, videoInfo, detectedBackgroundColor);
     const processedVideo = tiltShiftEnabled
       ? await applyVerticalTiltShift(panningVideo)
       : panningVideo;
