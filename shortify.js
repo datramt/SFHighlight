@@ -563,7 +563,7 @@ function createPanningContext(videoInfo, shouldLog = true) {
       slideCanvasHeight = slideFinalScaleHeight;
     } else {
       slideCanvasWidth = Math.max(portraitWidth, slideFinalScaleWidth + 200);
-      slideCanvasHeight = Math.min(portraitHeight, Math.max(portraitHeight, slideFinalScaleHeight + 200));
+      slideCanvasHeight = Math.max(portraitHeight, slideFinalScaleHeight + 200);
     }
     
     const basePanDistance = Math.max(0, slideCanvasWidth - portraitWidth);
