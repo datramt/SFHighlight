@@ -8,5 +8,6 @@ _stills
 _sites.mp4
 _faded.mp4
 _shorted.mp4
+_snapshot*
 .DS_Store
 temp_shortify_*

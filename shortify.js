@@ -22,6 +22,7 @@ function parseArguments() {
     fadeOutDuration: 0.5,
     tiltShiftEnabled: false,
     background: 'B', // Default to black background
+    snapshots: [],
     slideOverrides: {} // Store slide-specific overrides
   };
 
@@ -76,7 +77,13 @@ function parseArguments() {
         break;
       default:
         // Check for slide-specific overrides (e.g., -z1, -sh3, -eh2)
-        if (arg.startsWith('-z') && /^-z\d+$/.test(arg)) {
+        if (/^-ss\d+[be]$/.test(arg)) {
+          const match = arg.match(/^-ss(\d+)([be])$/);
+          config.snapshots.push({
+            slideNum: parseInt(match[1], 10),
+            position: match[2] === 'b' ? 'begin' : 'end'
+          });
+        } else if (arg.startsWith('-z') && /^-z\d+$/.test(arg)) {
           const slideNum = parseInt(arg.substring(2));
           const value = parseFloat(args[++i]);
           if (!config.slideOverrides[slideNum]) config.slideOverrides[slideNum] = {};
@@ -132,6 +139,7 @@ function showHelp() {
   console.log("  -fi, --fade-in <sec>  Audio fade-in duration at start of video (default: 0.02)");
   console.log("  -fo, --fade-out <sec> Audio fade-out duration at end of video (default: 0.5)");
   console.log("  -ts, --tilt-shift     Blur the left/right sides of the final portrait canvas");
+  console.log("  -ss<num><b|e>         Save snapshot for slide beginning/end, then exit (e.g., -ss1b)");
   console.log("  -bg, --background <W|B> Background color: W=white, B=black (default: B)");
   console.log("  -h, --help            Show this help message");
   console.log("");
@@ -149,6 +157,7 @@ function showHelp() {
   console.log("  node shortify.js -i video.mp4 -so 0.25 -eo 0.5");
   console.log("  node shortify.js -i video.mp4 -fi 0.1 -fo 1.25");
   console.log("  node shortify.js -i video.mp4 -ts");
+  console.log("  node shortify.js -i video.mp4 -ss1b -ss5e");
   console.log("  node shortify.js -i video.mp4 -z 50 -bg W");
   console.log("  node shortify.js -i video.mp4 -sh 2 -eh 3");
   console.log("  node shortify.js -i video.mp4 -z1 75 -sh3 1 -eh2 2");
@@ -254,6 +263,7 @@ const slideOverrides = config.slideOverrides;
 const fadeInDuration = config.fadeInDuration;
 const fadeOutDuration = config.fadeOutDuration;
 const tiltShiftEnabled = config.tiltShiftEnabled;
+const snapshots = config.snapshots;
 
 // Constants
 const TEMP_DIR = `temp_shortify_${Date.now()}`;
@@ -462,10 +472,7 @@ async function getFrameTimestamps(inputVideo, frameCount, usedRegularIntervals) 
   return timestamps;
 }
 
-// Function to create panning video from still frames
-async function createPanningVideo(stillsDir, frameFiles, timestamps, videoInfo) {
-  const outputVideo = path.join(TEMP_DIR, 'panning_video.mp4');
-  
+function createPanningContext(videoInfo, shouldLog = true) {
   // Calculate panning parameters based on input resolution
   const landscapeWidth = videoInfo.width;
   const landscapeHeight = videoInfo.height;
@@ -476,12 +483,12 @@ async function createPanningVideo(stillsDir, frameFiles, timestamps, videoInfo) 
     // 4K input -> 4K portrait (2160x3840)
     portraitHeight = 3840;
     portraitWidth = 2160;
-    logWithTimestamp("Detected 4K input, outputting 4K portrait (2160x3840)");
+    if (shouldLog) logWithTimestamp("Detected 4K input, outputting 4K portrait (2160x3840)");
   } else {
     // 1080p or lower -> 1080p portrait (608x1080)
     portraitHeight = 1080;
     portraitWidth = 608;
-    logWithTimestamp("Detected 1080p or lower input, outputting 1080p portrait (608x1080)");
+    if (shouldLog) logWithTimestamp("Detected 1080p or lower input, outputting 1080p portrait (608x1080)");
   }
   
   // Scale factor to fit landscape height to portrait height
@@ -504,26 +511,30 @@ async function createPanningVideo(stillsDir, frameFiles, timestamps, videoInfo) 
   // This should be the difference between the canvas width and portrait width
   const panDistance = Math.max(0, canvasWidth - portraitWidth);
   
-  logWithTimestamp(`Panning parameters: input=${landscapeWidth}x${landscapeHeight}, output=${portraitWidth}x${portraitHeight}`);
-  logWithTimestamp(`Zoom: ${zoomLevel}% (scale=${scaleFactor.toFixed(3)}), scaled=${finalScaleWidth}x${finalScaleHeight}, canvas=${canvasWidth}x${canvasHeight}`);
-  logWithTimestamp(`Pan distance: ${panDistance.toFixed(0)}px`);
+  if (shouldLog) {
+    logWithTimestamp(`Panning parameters: input=${landscapeWidth}x${landscapeHeight}, output=${portraitWidth}x${portraitHeight}`);
+    logWithTimestamp(`Zoom: ${zoomLevel}% (scale=${scaleFactor.toFixed(3)}), scaled=${finalScaleWidth}x${finalScaleHeight}, canvas=${canvasWidth}x${canvasHeight}`);
+    logWithTimestamp(`Pan distance: ${panDistance.toFixed(0)}px`);
+  }
   if (startHold > 0) {
-    logWithTimestamp(`First frame hold: will hold at start position for ${startHold}s before panning`);
+    if (shouldLog) logWithTimestamp(`First frame hold: will hold at start position for ${startHold}s before panning`);
   }
   if (holdDuration > 0) {
-    logWithTimestamp(`Last frame hold: will complete pan ${holdDuration}s early and hold at final position`);
+    if (shouldLog) logWithTimestamp(`Last frame hold: will complete pan ${holdDuration}s early and hold at final position`);
   }
   
   // Log slide overrides
-  for (const [slideNum, overrides] of Object.entries(slideOverrides)) {
-    const overridesList = [];
-    if (overrides.zoom) overridesList.push(`zoom=${overrides.zoom}%`);
-    if (overrides.startHold) overridesList.push(`startHold=${overrides.startHold}s`);
-    if (overrides.endHold) overridesList.push(`endHold=${overrides.endHold}s`);
-    if (overrides.startOffset !== undefined) overridesList.push(`startOffset=${overrides.startOffset}`);
-    if (overrides.endOffset !== undefined) overridesList.push(`endOffset=${overrides.endOffset}`);
-    if (overrides.background) overridesList.push(`background=${overrides.background}`);
-    logWithTimestamp(`Slide ${slideNum} overrides: ${overridesList.join(', ')}`);
+  if (shouldLog) {
+    for (const [slideNum, overrides] of Object.entries(slideOverrides)) {
+      const overridesList = [];
+      if (overrides.zoom) overridesList.push(`zoom=${overrides.zoom}%`);
+      if (overrides.startHold) overridesList.push(`startHold=${overrides.startHold}s`);
+      if (overrides.endHold) overridesList.push(`endHold=${overrides.endHold}s`);
+      if (overrides.startOffset !== undefined) overridesList.push(`startOffset=${overrides.startOffset}`);
+      if (overrides.endOffset !== undefined) overridesList.push(`endOffset=${overrides.endOffset}`);
+      if (overrides.background) overridesList.push(`background=${overrides.background}`);
+      logWithTimestamp(`Slide ${slideNum} overrides: ${overridesList.join(', ')}`);
+    }
   }
   
   // Helper function to get slide-specific values and calculate dimensions
@@ -589,6 +600,31 @@ async function createPanningVideo(stillsDir, frameFiles, timestamps, videoInfo) 
     };
   }
 
+  return {
+    portraitHeight,
+    portraitWidth,
+    getSlideConfig
+  };
+}
+
+function validateSlideCrop(slideConfig, slideIndex, portraitWidth) {
+  if (slideConfig.panEndX < slideConfig.panStartX) {
+    console.error(`Error: Slide ${slideIndex + 1} offsets reverse the pan direction (start=${slideConfig.panStartX.toFixed(1)}px, end=${slideConfig.panEndX.toFixed(1)}px)`);
+    process.exit(1);
+  }
+
+  const maxCropX = slideConfig.canvasWidth - portraitWidth;
+  if (slideConfig.panStartX < 0 || slideConfig.panStartX > maxCropX || slideConfig.panEndX < 0 || slideConfig.panEndX > maxCropX) {
+    console.error(`Error: Slide ${slideIndex + 1} offsets produce an out-of-bounds crop (start=${slideConfig.panStartX.toFixed(1)}px, end=${slideConfig.panEndX.toFixed(1)}px, valid=0-${maxCropX.toFixed(1)}px)`);
+    process.exit(1);
+  }
+}
+
+// Function to create panning video from still frames
+async function createPanningVideo(stillsDir, frameFiles, timestamps, videoInfo) {
+  const outputVideo = path.join(TEMP_DIR, 'panning_video.mp4');
+  const { portraitHeight, portraitWidth, getSlideConfig } = createPanningContext(videoInfo);
+
   // Create filter complex for each frame with panning
   let filterComplex = '';
   let inputs = '';
@@ -633,16 +669,7 @@ async function createPanningVideo(stillsDir, frameFiles, timestamps, videoInfo) 
       process.exit(1);
     }
 
-    if (slideConfig.panEndX < slideConfig.panStartX) {
-      console.error(`Error: Slide ${i + 1} offsets reverse the pan direction (start=${slideConfig.panStartX.toFixed(1)}px, end=${slideConfig.panEndX.toFixed(1)}px)`);
-      process.exit(1);
-    }
-
-    const maxCropX = slideConfig.canvasWidth - portraitWidth;
-    if (slideConfig.panStartX < 0 || slideConfig.panStartX > maxCropX || slideConfig.panEndX < 0 || slideConfig.panEndX > maxCropX) {
-      console.error(`Error: Slide ${i + 1} offsets produce an out-of-bounds crop (start=${slideConfig.panStartX.toFixed(1)}px, end=${slideConfig.panEndX.toFixed(1)}px, valid=0-${maxCropX.toFixed(1)}px)`);
-      process.exit(1);
-    }
+    validateSlideCrop(slideConfig, i, portraitWidth);
     
     // Calculate pan expression based on holds
     if (hasStartHold && hasEndHold) {
@@ -711,6 +738,55 @@ async function createPanningVideo(stillsDir, frameFiles, timestamps, videoInfo) 
   await safeExec(cmd, "Creating panning video from still frames");
   
   return outputVideo;
+}
+
+function buildSnapshotFilter(slideConfig, cropX, portraitWidth, portraitHeight) {
+  const bgColor = slideConfig.background === 'W' ? 'white' : 'black';
+
+  if (slideConfig.zoom === 100) {
+    if (slideConfig.leftOffsetPadding > 0 || slideConfig.rightOffsetPadding > 0) {
+      return `scale=${slideConfig.finalScaleWidth}:${slideConfig.finalScaleHeight},pad=${slideConfig.canvasWidth}:${slideConfig.canvasHeight}:${slideConfig.leftOffsetPadding}:0:${bgColor},crop=${portraitWidth}:${portraitHeight}:${cropX}:0`;
+    }
+
+    return `scale=${slideConfig.finalScaleWidth}:${slideConfig.finalScaleHeight},crop=${portraitWidth}:${portraitHeight}:${cropX}:0`;
+  }
+
+  const canvasHorizontalOffset = Math.round((slideConfig.baseCanvasWidth - slideConfig.finalScaleWidth) / 2) + slideConfig.leftOffsetPadding;
+  const canvasVerticalOffset = Math.round((slideConfig.canvasHeight - slideConfig.finalScaleHeight) / 2);
+  const verticalCropOffset = slideConfig.zoom > 100
+    ? Math.round((slideConfig.finalScaleHeight - portraitHeight) / 2)
+    : 0;
+
+  return `scale=${slideConfig.finalScaleWidth}:${slideConfig.finalScaleHeight},pad=${slideConfig.canvasWidth}:${slideConfig.canvasHeight}:${canvasHorizontalOffset}:${canvasVerticalOffset}:${bgColor},crop=${portraitWidth}:${portraitHeight}:${cropX}:${verticalCropOffset}`;
+}
+
+async function createSnapshots(stillsDir, frameFiles, videoInfo) {
+  const { portraitHeight, portraitWidth, getSlideConfig } = createPanningContext(videoInfo);
+
+  for (const snapshot of snapshots) {
+    const slideIndex = snapshot.slideNum - 1;
+    if (slideIndex < 0 || slideIndex >= frameFiles.length) {
+      console.error(`Error: Snapshot requested slide ${snapshot.slideNum}, but only ${frameFiles.length} slides were found`);
+      process.exit(1);
+    }
+
+    const slideConfig = getSlideConfig(slideIndex);
+    validateSlideCrop(slideConfig, slideIndex, portraitWidth);
+
+    const cropX = snapshot.position === 'begin'
+      ? slideConfig.panStartX
+      : slideConfig.panEndX;
+    const frameFile = path.join(stillsDir, frameFiles[slideIndex]);
+    const outputFile = `_snapshot_slide_${snapshot.slideNum}_${snapshot.position}.png`;
+    const filter = buildSnapshotFilter(slideConfig, cropX, portraitWidth, portraitHeight);
+
+    logWithTimestamp(`Snapshot slide ${snapshot.slideNum} ${snapshot.position}: cropX=${cropX.toFixed(1)}px, output=${outputFile}`);
+
+    await safeExec(
+      `ffmpeg -y -i "${frameFile}" -vf "${filter}" -frames:v 1 "${outputFile}"`,
+      `Creating snapshot ${outputFile}`
+    );
+  }
 }
 
 // Function to blur only the left/right bands of the final portrait canvas
@@ -818,6 +894,13 @@ async function processVideo() {
       finalTimestamps = await getFrameTimestamps(inputVideo, frameFiles.length, usedRegularIntervals);
     }
     logWithTimestamp(`Frame timestamps: ${finalTimestamps.map(t => t.toFixed(2)).join(', ')}`);
+
+    if (snapshots.length > 0) {
+      await createSnapshots(stillsDir, frameFiles, videoInfo);
+      await cleanup([TEMP_DIR]);
+      logWithTimestamp("Snapshot processing complete.");
+      return;
+    }
     
     // Create panning video
     const panningVideo = await createPanningVideo(stillsDir, frameFiles, finalTimestamps, videoInfo);
