@@ -18,6 +18,7 @@ function parseArguments() {
     startHold: 0,
     fadeInDuration: 0.02,
     fadeOutDuration: 0.5,
+    tiltShiftEnabled: false,
     background: 'B', // Default to black background
     slideOverrides: {} // Store slide-specific overrides
   };
@@ -49,6 +50,10 @@ function parseArguments() {
       case '-fo':
       case '--fade-out':
         config.fadeOutDuration = parseFloat(args[++i]);
+        break;
+      case '-ts':
+      case '--tilt-shift':
+        config.tiltShiftEnabled = true;
         break;
       case '-bg':
       case '--background':
@@ -104,6 +109,7 @@ function showHelp() {
   console.log("  -sh, --start-hold <sec> Seconds to hold first frame at start position (default: 0)");
   console.log("  -fi, --fade-in <sec>  Audio fade-in duration at start of video (default: 0.02)");
   console.log("  -fo, --fade-out <sec> Audio fade-out duration at end of video (default: 0.5)");
+  console.log("  -ts, --tilt-shift     Blur the left/right sides of the final portrait canvas");
   console.log("  -bg, --background <W|B> Background color: W=white, B=black (default: B)");
   console.log("  -h, --help            Show this help message");
   console.log("");
@@ -117,6 +123,7 @@ function showHelp() {
   console.log("  node shortify.js -i video.mp4");
   console.log("  node shortify.js -i video.mp4 -z 75 -eh 3");
   console.log("  node shortify.js -i video.mp4 -fi 0.1 -fo 1.25");
+  console.log("  node shortify.js -i video.mp4 -ts");
   console.log("  node shortify.js -i video.mp4 -z 50 -bg W");
   console.log("  node shortify.js -i video.mp4 -sh 2 -eh 3");
   console.log("  node shortify.js -i video.mp4 -z1 75 -sh3 1 -eh2 2");
@@ -199,6 +206,7 @@ const backgroundColor = config.background;
 const slideOverrides = config.slideOverrides;
 const fadeInDuration = config.fadeInDuration;
 const fadeOutDuration = config.fadeOutDuration;
+const tiltShiftEnabled = config.tiltShiftEnabled;
 
 // Constants
 const TEMP_DIR = `temp_shortify_${Date.now()}`;
@@ -620,6 +628,33 @@ async function createPanningVideo(stillsDir, frameFiles, timestamps, videoInfo) 
   return outputVideo;
 }
 
+// Function to blur only the left/right bands of the final portrait canvas
+async function applyVerticalTiltShift(inputVideo) {
+  const outputVideo = path.join(TEMP_DIR, 'tilt_shift_video.mp4');
+  const sideWidthExpression = 'floor(iw*0.18/2)*2';
+  const blurRadius = 12;
+  const chromaBlurRadius = 6;
+  const sideBlur = `boxblur=luma_radius=${blurRadius}:luma_power=1:chroma_radius=${chromaBlurRadius}:chroma_power=1`;
+  const leftAlpha = `geq=r='r(X,Y)':g='g(X,Y)':b='b(X,Y)':a='if(lte(X,W*0.57),255,255*(1-(X-W*0.57)/(W*0.43)))'`;
+  const rightAlpha = `geq=r='r(X,Y)':g='g(X,Y)':b='b(X,Y)':a='if(gte(X,W*0.43),255,255*X/(W*0.43))'`;
+  const filterComplex = [
+    `[0:v]split=3[base][leftsrc][rightsrc]`,
+    `[leftsrc]crop=w=${sideWidthExpression}:h=ih:x=0:y=0,${sideBlur},format=rgba,${leftAlpha}[left]`,
+    `[rightsrc]crop=w=${sideWidthExpression}:h=ih:x=iw-${sideWidthExpression}:y=0,${sideBlur},format=rgba,${rightAlpha}[right]`,
+    `[base][left]overlay=0:0[tmp]`,
+    `[tmp][right]overlay=W-w:0,format=yuv420p[outv]`
+  ].join(';');
+
+  logWithTimestamp("Vertical tilt-shift: blurring outer bands with feathered side-strip pass");
+
+  await safeExec(
+    `ffmpeg -y -i "${inputVideo}" -filter_complex "${filterComplex}" -map "[outv]" -an -c:v libx264 -preset veryfast -crf 20 -pix_fmt yuv420p "${outputVideo}"`,
+    "Applying vertical tilt-shift blur"
+  );
+
+  return outputVideo;
+}
+
 // Function to extract and reattach audio
 async function reattachAudio(inputVideo, panningVideo, videoInfo) {
   // Extract audio from original video
@@ -701,9 +736,12 @@ async function processVideo() {
     
     // Create panning video
     const panningVideo = await createPanningVideo(stillsDir, frameFiles, finalTimestamps, videoInfo);
+    const processedVideo = tiltShiftEnabled
+      ? await applyVerticalTiltShift(panningVideo)
+      : panningVideo;
     
     // Reattach audio
-    const audioFile = await reattachAudio(inputVideo, panningVideo, videoInfo);
+    const audioFile = await reattachAudio(inputVideo, processedVideo, videoInfo);
     
     // Cleanup
     await cleanup([TEMP_DIR]);
