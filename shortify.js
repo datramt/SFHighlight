@@ -16,6 +16,7 @@ function parseArguments() {
     zoomLevel: 100,
     endHold: 0,
     startHold: 0,
+    fadeInDuration: 0.02,
     fadeOutDuration: 0.5,
     background: 'B', // Default to black background
     slideOverrides: {} // Store slide-specific overrides
@@ -40,6 +41,10 @@ function parseArguments() {
       case '-sh':
       case '--start-hold':
         config.startHold = parseFloat(args[++i]);
+        break;
+      case '-fi':
+      case '--fade-in':
+        config.fadeInDuration = parseFloat(args[++i]);
         break;
       case '-fo':
       case '--fade-out':
@@ -97,6 +102,7 @@ function showHelp() {
   console.log("                        100 = 100% match, 50 = 50% zoom out, 150 = 150% zoom in");
   console.log("  -eh, --end-hold <sec>  Seconds to hold last frame at final position (default: 0)");
   console.log("  -sh, --start-hold <sec> Seconds to hold first frame at start position (default: 0)");
+  console.log("  -fi, --fade-in <sec>  Audio fade-in duration at start of video (default: 0.02)");
   console.log("  -fo, --fade-out <sec> Audio fade-out duration at end of video (default: 0.5)");
   console.log("  -bg, --background <W|B> Background color: W=white, B=black (default: B)");
   console.log("  -h, --help            Show this help message");
@@ -110,7 +116,7 @@ function showHelp() {
   console.log("Examples:");
   console.log("  node shortify.js -i video.mp4");
   console.log("  node shortify.js -i video.mp4 -z 75 -eh 3");
-  console.log("  node shortify.js -i video.mp4 -fo 1.25");
+  console.log("  node shortify.js -i video.mp4 -fi 0.1 -fo 1.25");
   console.log("  node shortify.js -i video.mp4 -z 50 -bg W");
   console.log("  node shortify.js -i video.mp4 -sh 2 -eh 3");
   console.log("  node shortify.js -i video.mp4 -z1 75 -sh3 1 -eh2 2");
@@ -137,6 +143,11 @@ if (config.endHold < 0) {
 
 if (config.startHold < 0) {
   console.error("Error: startHold must be a positive number or zero");
+  process.exit(1);
+}
+
+if (isNaN(config.fadeInDuration) || config.fadeInDuration < 0) {
+  console.error("Error: fadeInDuration must be a positive number or zero");
   process.exit(1);
 }
 
@@ -186,6 +197,7 @@ const startHold = config.startHold;
 const zoomLevel = config.zoomLevel;
 const backgroundColor = config.background;
 const slideOverrides = config.slideOverrides;
+const fadeInDuration = config.fadeInDuration;
 const fadeOutDuration = config.fadeOutDuration;
 
 // Constants
@@ -617,14 +629,28 @@ async function reattachAudio(inputVideo, panningVideo, videoInfo) {
     "Extracting audio from original video"
   );
   
-  const fadeDuration = Math.min(fadeOutDuration, videoInfo.duration);
-  const fadeStartTime = Math.max(0, videoInfo.duration - fadeDuration);
-  const audioOptions = fadeDuration > 0
-    ? `-af "afade=t=out:st=${fadeStartTime}:d=${fadeDuration}" -c:a aac`
+  const audioFilters = [];
+  const fadeIn = Math.min(fadeInDuration, videoInfo.duration);
+  const fadeOut = Math.min(fadeOutDuration, videoInfo.duration);
+  const fadeOutStartTime = Math.max(0, videoInfo.duration - fadeOut);
+
+  if (fadeIn > 0) {
+    audioFilters.push(`afade=t=in:st=0:d=${fadeIn}`);
+  }
+
+  if (fadeOut > 0) {
+    audioFilters.push(`afade=t=out:st=${fadeOutStartTime}:d=${fadeOut}`);
+  }
+
+  const audioOptions = audioFilters.length > 0
+    ? `-af "${audioFilters.join(',')}" -c:a aac`
     : `-c:a aac`;
 
-  if (fadeDuration > 0) {
-    logWithTimestamp(`Audio fade-out: ${fadeDuration}s starting at ${fadeStartTime}s`);
+  if (fadeIn > 0) {
+    logWithTimestamp(`Audio fade-in: ${fadeIn}s starting at 0s`);
+  }
+  if (fadeOut > 0) {
+    logWithTimestamp(`Audio fade-out: ${fadeOut}s starting at ${fadeOutStartTime}s`);
   }
   
   // Combine panning video with audio
